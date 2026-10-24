@@ -104,6 +104,22 @@ If you used an earlier CSV-only version of the app, import your existing replace
 
 Open **Weekly Reports** from the sidebar to access the report module currently included in this project.
 
+## Screenshots
+
+The screenshots below use synthetic example records only; they do not contain operational inventory or staff data.
+
+### Inventory
+
+The inventory table supports row selection, filtering, configurable columns, and replacement-derived status fields. The selected example row is highlighted across the visible columns.
+
+![Inventory table with a selected synthetic device row](docs/screenshots/inventory-guide.png)
+
+### Device Replacement History
+
+Replacement events can be reviewed and filtered in a separate history table. The table scrolls horizontally to show additional device and lifecycle fields.
+
+![Device replacement history with synthetic example data](docs/screenshots/replacement-history-guide.png)
+
 ## CSV formats
 
 ### Inventory CSV
