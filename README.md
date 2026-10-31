@@ -104,10 +104,6 @@ The Inventory view derives replacement status, replaced-for staff, replacement d
 
 If you used an earlier CSV-only version of the app, import your existing replacement-history CSV once after upgrading. The imported data will then be stored in SQLite.
 
-### Weekly Reports
-
-Open **Weekly Reports** from the sidebar to access the report module currently included in this project.
-
 ## Screenshots
 
 The screenshots below use synthetic example records only; they do not contain operational inventory or staff data.
@@ -193,7 +189,6 @@ The tests use temporary SQLite databases and do not need your local inventory da
 - `dashboard.js`, `dashboard_metrics.py` — dashboard UI and calculations
 - `inventory.js` — inventory, CSV import/export, warranty matching, and device actions
 - `replacement-history.js` — replacement history UI, validation, matching, and CSV transfer
-- `reports.js` — weekly reports module
 - `server.py` — local HTTP server and SQLite API
 - `test_server.py`, `test_dashboard_metrics.py` — automated tests
 - `start-linux.sh`, `start-windows.bat` — convenience launchers
