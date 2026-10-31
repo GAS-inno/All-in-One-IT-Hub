@@ -294,11 +294,14 @@ const DateUtil = {
 const COUNTRIES = {
   all: '🌐 All',
   SG: '🇸🇬 Singapore',
+  AU: '🇦🇺 Australia',
   MY: '🇲🇾 Malaysia',
   TH: '🇹🇭 Thailand',
-  PH: '🇵🇭 Philippines',
+  IN: '🇮🇳 India',
   ID: '🇮🇩 Indonesia',
-  AU: '🇦🇺 Australia',
+  VN: '🇻🇳 Vietnam',
+  PH: '🇵🇭 Philippines',
+  JP: '🇯🇵 Japan',
   US: '🇺🇸 United States'
 };
 

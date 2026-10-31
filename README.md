@@ -72,14 +72,18 @@ Open **Dashboard** to view inventory metrics, filters, and charts. Use the avail
 1. Open **Inventory**.
 2. Select **Import CSV** and choose an Intune device export. The required columns are `Device ID`, `Device name`, and `Serial number`.
 3. If the import finds serial duplicates, choose whether to merge them with existing records or keep them separately. Kept duplicates are given a suffix and highlighted.
-4. Search and filter by device, user, group, compliance, warranty status, or duplicates. Choose which columns appear using the layout controls.
+4. Use the universal search box to search across all device fields — device name, user, serial, group, warranty, status, and more. The **Duplicates only** checkbox filters to duplicated serials. Visible-column checkboxes appear in one horizontal row; use **More columns** to enable hidden columns, or **Reset layout** to restore the defaults.
 5. Select a device checkbox to highlight its entire row. Use **Select all visible**, **Edit selected**, or **Delete selected** for bulk actions.
 6. Use **+ Add device**, **Edit**, or **Delete** to manage individual records. Inventory changes are saved to SQLite. **Undo** and **Redo** are available for recent inventory changes in the current page session.
-7. Select **Export CSV** to download the inventory currently shown by the active filters.
+7. Select **Export CSV** to download the inventory currently shown by the active search or filters.
 
 The inventory supports Laptop, Firewall, UPS, AccessPoint, and Switch device types in the same SQLite database. Use the device-type links below **Inventory** to filter the list; a link is shown only while at least one device of that type exists. Use **Inventory** to see all types. Existing records without an asset type remain laptops. Use **+ Add device** to choose a type and enter common details such as serial number, manufacturer, model, and location, plus network or UPS fields where relevant. CSV imports can include an `Asset type` column, or a `Device type` column containing one of the supported categories; without one they are treated as the currently selected type, or Laptop when viewing all inventory.
 
 **Fixed Asset Number** is optional. Enter the Finance/SAP book asset number when known. Hover over the column heading or field label for guidance; if the number is unavailable, check with the Finance asset manager. The value is retained in SQLite and included in inventory CSV imports and exports.
+
+**Active device status** and **Age** are computed columns. A device is shown as **Inactive** when its last check-in is more than 90 days old, otherwise **Active**. **Age** shows the warranty span in the format `5y 1m` (derived from the warranty start and end dates).
+
+The inventory table keeps the header, search box, and checkbox column visible while you scroll, so the displayed columns and records remain easy to track.
 
 Replacement fields shown in the table are derived from the separate replacement history and are not written into the source inventory records or inventory CSV export.
 
@@ -130,6 +134,8 @@ Required headers:
 - `Serial number`
 
 `Device ID`, `Asset type`, and `Fixed Asset Number` are optional. Add an optional `Asset type` column (recommended) or a `Device type` column containing one of `Laptop`, `Firewall`, `UPS`, `AccessPoint`, or `Switch` to classify each imported record. Other columns, including `Fixed Asset Number`, are retained where provided. The app derives `Total storage (GB)` from raw `Total storage` when available.
+
+After import, a report lists the recognized columns (which were updated, shown in green) and any unrecognized columns (shown in red). The report stays open until you close it.
 
 ### Warranty CSV
 
