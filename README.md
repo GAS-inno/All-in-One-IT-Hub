@@ -77,7 +77,11 @@ Open **Dashboard** to view inventory metrics, filters, and charts. Use the avail
 6. Use **+ Add device**, **Edit**, or **Delete** to manage individual records. Inventory changes are saved to SQLite. **Undo** and **Redo** are available for recent inventory changes in the current page session.
 7. Select **Export CSV** to download the inventory currently shown by the active filters.
 
-Inventory fields imported from Intune remain the source inventory data. Replacement fields shown in the table are derived from the separate replacement history and are not written into the source inventory records or inventory CSV export.
+The inventory supports Laptop, Firewall, UPS, AccessPoint, and Switch device types in the same SQLite database. Use the device-type links below **Inventory** to filter the list; a link is shown only while at least one device of that type exists. Use **Inventory** to see all types. Existing records without an asset type remain laptops. Use **+ Add device** to choose a type and enter common details such as serial number, manufacturer, model, and location, plus network or UPS fields where relevant. CSV imports can include an `Asset type` column, or a `Device type` column containing one of the supported categories; without one they are treated as the currently selected type, or Laptop when viewing all inventory.
+
+**Fixed Asset Number** is optional. Enter the Finance/SAP book asset number when known. Hover over the column heading or field label for guidance; if the number is unavailable, check with the Finance asset manager. The value is retained in SQLite and included in inventory CSV imports and exports.
+
+Replacement fields shown in the table are derived from the separate replacement history and are not written into the source inventory records or inventory CSV export.
 
 ### Warranty matching
 
@@ -126,11 +130,10 @@ Replacement events can be reviewed and filtered in a separate history table. The
 
 Required headers:
 
-- `Device ID`
 - `Device name`
 - `Serial number`
 
-Other Intune columns are retained where provided. The app derives `Total storage (GB)` from raw `Total storage` when available.
+`Device ID`, `Asset type`, and `Fixed Asset Number` are optional. Add an optional `Asset type` column (recommended) or a `Device type` column containing one of `Laptop`, `Firewall`, `UPS`, `AccessPoint`, or `Switch` to classify each imported record. Other columns, including `Fixed Asset Number`, are retained where provided. The app derives `Total storage (GB)` from raw `Total storage` when available.
 
 ### Warranty CSV
 

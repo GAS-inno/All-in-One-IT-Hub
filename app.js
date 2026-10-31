@@ -107,12 +107,22 @@ const App = {
     this.currentModule = moduleName;
 
     // Update nav
+    const activeDeviceType = moduleName === 'inventory'
+      ? this.modules.inventory?.getDeviceType?.() || ''
+      : '';
     document.querySelectorAll('.nav-item').forEach(el => {
-      el.classList.toggle('active', el.dataset.module === moduleName);
+      el.classList.toggle(
+        'active',
+        el.dataset.module === moduleName
+          && (el.dataset.deviceType ? el.dataset.deviceType === activeDeviceType : !activeDeviceType)
+      );
     });
 
     // Update topbar title
-    const label = document.querySelector(`[data-module="${moduleName}"]`)?.textContent.trim() || moduleName;
+    const inventoryTypeLabel = moduleName === 'inventory' ? this.modules.inventory?.getDeviceTypeLabel?.() : '';
+    const label = inventoryTypeLabel
+      ? `Inventory · ${inventoryTypeLabel}`
+      : document.querySelector(`[data-module="${moduleName}"]`)?.textContent.trim() || moduleName;
     document.getElementById('topbarTitle').textContent = label;
 
     // Render module
@@ -318,14 +328,20 @@ function confirmDelete(itemName, onConfirm) {
    ============================================================ */
 document.addEventListener('DOMContentLoaded', () => {
   // Sidebar nav
-  document.querySelectorAll('.nav-item').forEach(item => {
-    item.addEventListener('click', e => {
+  document.querySelector('.sidebar-nav').addEventListener('click', e => {
+      const item = e.target.closest('.nav-item');
+      if (!item) return;
       e.preventDefault();
-      App.navigateTo(item.dataset.module);
+      if (item.dataset.deviceType) {
+        App.modules.inventory?.selectDeviceType?.(item.dataset.deviceType);
+        App.navigateTo('inventory');
+      } else {
+        if (item.dataset.module === 'inventory') App.modules.inventory?.selectDeviceType?.('');
+        App.navigateTo(item.dataset.module);
+      }
       // Close mobile sidebar
       document.getElementById('sidebar').classList.remove('open');
       document.getElementById('sidebarOverlay').classList.remove('active');
-    });
   });
 
   // Hamburger
@@ -363,7 +379,10 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Load inventory from SQLite before rendering any module.
-  App.store.initialize().then(() => App.navigateTo('dashboard')).catch((error) => {
+  App.store.initialize().then(() => {
+    App.modules.inventory?.refreshDeviceTypeNavigation?.();
+    App.navigateTo('dashboard');
+  }).catch((error) => {
     console.error('Could not connect to the local SQLite server.', error);
     const safeMessage = String(error.message || error).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
     document.getElementById('moduleContainer').innerHTML = `

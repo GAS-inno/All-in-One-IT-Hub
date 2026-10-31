@@ -162,6 +162,12 @@ body {
   border-radius: 4px;
   border: 1px solid var(--accent-dim);
 }
+.device-type-nav:empty { display: none; }
+.device-type-nav .nav-item {
+  padding-left: 44px;
+  font-size: 12px;
+  font-weight: 500;
+}
 
 .sidebar-footer {
   border-top: 1px solid var(--border);

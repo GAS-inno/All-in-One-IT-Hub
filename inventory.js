@@ -1,20 +1,30 @@
 App.registerModule('inventory', (() => {
   const STORAGE_KEY = 'inventory';
   const WARRANTY_KEY = 'warranty';
+  const DEVICE_TYPES = [
+    { value: 'laptop', label: 'Laptop', navLabel: 'Laptop' },
+    { value: 'firewall', label: 'Firewall', navLabel: 'Firewall' },
+    { value: 'ups', label: 'UPS', navLabel: 'UPS' },
+    { value: 'accesspoint', label: 'AccessPoint', navLabel: 'AccessPoint' },
+    { value: 'switch', label: 'Switch', navLabel: 'Switches' }
+  ];
+  const FIXED_ASSET_NUMBER_HELP = 'This number is from Finance, SAP book Asset number. If you do not have it, please check with Finance asset manager.';
   const DEFAULT_COLUMNS = [
-    'Device ID', 'Device name', 'Ownership', 'Compliance', 'OS', 'OS version',
+    'Asset type', 'Fixed Asset Number', 'Device ID', 'Device name', 'Ownership', 'Compliance', 'OS', 'OS version',
     'Primary user email address', 'Primary user UPN', 'Last check-in', 'Enrollment date',
     'Model', 'Manufacturer', 'Serial number', 'Primary user display name', 'Total storage',
     'Free storage', 'Azure AD registered', 'IntuneGroup.GroupName', 'IntuneGroup.DeviceName',
     'IntuneGroup.SerialNumber', 'IntuneGroup.GroupTag', 'IntuneGroup.Model', 'IntuneGroup.Manufacturer',
-    'WindowsVersion', 'Total storage (GB)', 'Warranty Start Date', 'Warranty End Date', 'Warranty Match Status'
+    'WindowsVersion', 'Total storage (GB)', 'Location', 'Management IP', 'Firmware version',
+    'UPS Capacity (VA)', 'Battery replacement date', 'Warranty Start Date', 'Warranty End Date', 'Warranty Match Status'
   ];
   const REPLACEMENT_COLUMNS = [
     'Replacement Status', 'Replaced For Staff Member', 'Replacement Date',
     'Replaced By Device Serial Number', 'Replacement Count', 'Handover Eligibility', 'Lifecycle Status'
   ];
   const DEFAULT_VISIBLE_COLUMNS = [
-    'Device name', 'Serial number', 'Manufacturer', 'Model', 'Compliance',
+    'Asset type', 'Fixed Asset Number', 'Device name', 'Serial number', 'Manufacturer', 'Model', 'Location',
+    'Management IP', 'Firmware version', 'UPS Capacity (VA)', 'Battery replacement date', 'Compliance',
     'Primary user email address', 'IntuneGroup.GroupName', 'IntuneGroup.GroupTag',
     'Last check-in', 'Total storage (GB)', 'Warranty Start Date', 'Warranty End Date',
     'Warranty Match Status', ...REPLACEMENT_COLUMNS
@@ -32,6 +42,54 @@ App.registerModule('inventory', (() => {
   let dashboardRecordIndexes = null;
   let dashboardFilterLabel = '';
   let selectedDeviceIndexes = new Set();
+  let activeDeviceType = '';
+
+  function normalizeDeviceType(value = '') {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+    if (!normalized) return 'laptop';
+    const type = DEVICE_TYPES.find((item) => item.value === normalized)
+      || (normalized === 'switches' ? DEVICE_TYPES.find((item) => item.value === 'switch') : null);
+    if (!type) throw new Error(`Unsupported device type "${value}". Choose Laptop, Firewall, UPS, AccessPoint, or Switch.`);
+    return type.value;
+  }
+
+  function deviceTypeLabel(value) {
+    return DEVICE_TYPES.find((item) => item.value === value)?.label || value;
+  }
+
+  function getAssetType(record) {
+    const category = record['Asset type'];
+    if (category) return normalizeDeviceType(category);
+    const legacyType = record['Device type'] || record['Device Type'] || record.Type;
+    if (!legacyType) return 'laptop';
+    try {
+      return normalizeDeviceType(legacyType);
+    } catch {
+      return 'laptop';
+    }
+  }
+
+  function updateDeviceTypeNavigation() {
+    const navigation = document.getElementById('deviceTypeNav');
+    if (!navigation) return;
+    const counts = new Map(DEVICE_TYPES.map(({ value }) => [value, 0]));
+    getInventory().forEach((device) => {
+      const type = getAssetType(device);
+      counts.set(type, (counts.get(type) || 0) + 1);
+    });
+    if (activeDeviceType && counts.get(activeDeviceType) === 0) activeDeviceType = '';
+    navigation.innerHTML = DEVICE_TYPES
+      .filter(({ value }) => counts.get(value) > 0)
+      .map(({ value, navLabel }) => `<a href="#" class="nav-item device-type-nav-item ${activeDeviceType === value ? 'active' : ''}" data-module="inventory" data-device-type="${value}"><span class="nav-icon">·</span>${navLabel}<span class="nav-badge">${counts.get(value)}</span></a>`)
+      .join('');
+    document.querySelectorAll('.sidebar-nav .nav-item').forEach((item) => {
+      item.classList.toggle(
+        'active',
+        App.currentModule === item.dataset.module
+          && (item.dataset.deviceType ? item.dataset.deviceType === activeDeviceType : !activeDeviceType)
+      );
+    });
+  }
 
   function getHistoryState() {
     return historyState;
@@ -59,7 +117,10 @@ App.registerModule('inventory', (() => {
   }
 
   function setInventory(list) {
-    const next = Array.isArray(list) ? list : [];
+    const next = Array.isArray(list) ? list.map((device) => ({
+      ...device,
+      'Asset type': getAssetType(device)
+    })) : [];
     const previous = App.store.get(STORAGE_KEY);
     App.store.set(STORAGE_KEY, next);
     if (JSON.stringify(previous) === JSON.stringify(next)) return;
@@ -90,7 +151,10 @@ App.registerModule('inventory', (() => {
 
   function getInventory() {
     const list = App.store.get(STORAGE_KEY);
-    return Array.isArray(list) ? list.map((device) => ({ ...device })) : [];
+    return Array.isArray(list) ? list.map((device) => ({
+      ...device,
+      'Asset type': getAssetType(device)
+    })) : [];
   }
 
   function getWarrantyData() {
@@ -105,9 +169,9 @@ App.registerModule('inventory', (() => {
     try {
       const saved = JSON.parse(localStorage.getItem('nexit_inventory_layout') || 'null');
       if (!saved || !Array.isArray(saved.visible) || !saved.visible.length) return DEFAULT_VISIBLE_COLUMNS;
-      if (saved.version !== 4) {
+      if (saved.version !== 6) {
         const allowedColumns = [...DEFAULT_COLUMNS, ...REPLACEMENT_COLUMNS];
-        const migrated = Array.from(new Set([...saved.visible, 'IntuneGroup.GroupTag', ...REPLACEMENT_COLUMNS]))
+        const migrated = Array.from(new Set([...saved.visible, 'Asset type', 'Fixed Asset Number', 'Location', ...REPLACEMENT_COLUMNS]))
           .filter((col) => allowedColumns.includes(col));
         saveVisibleColumns(migrated);
         return migrated;
@@ -121,7 +185,7 @@ App.registerModule('inventory', (() => {
   }
 
   function saveVisibleColumns(columns) {
-    localStorage.setItem('nexit_inventory_layout', JSON.stringify({ visible: columns, version: 4 }));
+    localStorage.setItem('nexit_inventory_layout', JSON.stringify({ visible: columns, version: 6 }));
   }
 
   function toNumber(value) {
@@ -185,9 +249,20 @@ App.registerModule('inventory', (() => {
     const groupTag = record['IntuneGroup.GroupTag'] || record['Group tag'] || record['Group Tag'] || record['GroupTag'] || '';
     const storageRaw = record['Total storage'] || record['Total Storage'] || '';
     const storageGb = parseStorageValue(storageRaw, 'bytes');
+    const assetTypeInput = record['Asset type'];
+    const deviceTypeInput = assetTypeInput || record['Device type'] || record['Device Type'] || record.Type || activeDeviceType;
+    let assetType = activeDeviceType || 'laptop';
+    if (deviceTypeInput) {
+      try {
+        assetType = normalizeDeviceType(deviceTypeInput);
+      } catch (error) {
+        if (assetTypeInput) throw error;
+      }
+    }
 
     return {
       ...record,
+      'Asset type': assetType,
       'Device ID': deviceId,
       'Device name': deviceName,
       'Serial number': serialFromRaw,
@@ -255,7 +330,7 @@ App.registerModule('inventory', (() => {
       lookup[normalizeHeader(header)] = index;
     });
 
-    const required = ['device id', 'device name', 'serial number'];
+    const required = ['device name', 'serial number'];
     const missing = required.filter((key) => lookup[key] === undefined);
     if (missing.length) {
       throw new Error('Missing required CSV columns: ' + missing.join(', '));
@@ -375,13 +450,14 @@ App.registerModule('inventory', (() => {
     const complianceValue = complianceFilter ? complianceFilter.value : '';
     const warrantyValue = warrantyStatusFilter;
     return rows.filter((device) => {
-      const textSearch = [device['Device name'], device['Serial number'], device['Manufacturer'], device['Model'], device['Primary user display name'], device['Primary user email address'], device['Primary user UPN'], device['IntuneGroup.GroupName'], device['IntuneGroup.GroupTag']].join(' ').toLowerCase();
+      const textSearch = [device['Device name'], device['Fixed Asset Number'], device['Serial number'], device['Manufacturer'], device['Model'], device['Primary user display name'], device['Primary user email address'], device['Primary user UPN'], device['IntuneGroup.GroupName'], device['IntuneGroup.GroupTag']].join(' ').toLowerCase();
       const matchesSearch = !searchValue || textSearch.includes(searchValue);
       const matchesGroup = !groupValue || (device['IntuneGroup.GroupName'] || '').toLowerCase() === groupValue.toLowerCase();
       const matchesCompliance = !complianceValue || (device['Compliance'] || '').toLowerCase() === complianceValue.toLowerCase();
       const matchesWarranty = !warrantyValue || (device['Warranty Match Status'] || 'Unmatched') === warrantyValue;
       const matchesDashboard = dashboardRecordIndexes === null || dashboardRecordIndexes.has(rows.indexOf(device));
-      return matchesSearch && matchesGroup && matchesCompliance && matchesWarranty && matchesDashboard && (!duplicatesOnly || device['Duplicate Serial'] === true);
+      const matchesDeviceType = !activeDeviceType || getAssetType(device) === activeDeviceType;
+      return matchesSearch && matchesGroup && matchesCompliance && matchesWarranty && matchesDashboard && matchesDeviceType && (!duplicatesOnly || device['Duplicate Serial'] === true);
     });
   }
 
@@ -414,6 +490,7 @@ App.registerModule('inventory', (() => {
           return `<td><span class="badge ${badgeClass}">${escapeHtml(status)}</span></td>`;
         }
         if (col === 'Total storage (GB)') return `<td>${escapeHtml(formatGb(value))}</td>`;
+        if (col === 'Asset type') return `<td>${escapeHtml(deviceTypeLabel(getAssetType(device)))}</td>`;
         if (col === 'Serial number' && duplicate) return `<td><span class="duplicate-serial">${escapeHtml(value)}</span></td>`;
         return `<td>${escapeHtml(value || '—')}</td>`;
       }).join('');
@@ -424,7 +501,7 @@ App.registerModule('inventory', (() => {
 
   function renderLayoutControls() {
     const layout = getVisibleColumns();
-    const available = ['Device name', 'Serial number', 'Manufacturer', 'Model', 'OS', 'Compliance', 'Primary user email address', 'IntuneGroup.GroupName', 'IntuneGroup.GroupTag', 'Last check-in', 'Total storage (GB)', 'Warranty Start Date', 'Warranty End Date', 'Warranty Match Status', ...REPLACEMENT_COLUMNS];
+    const available = ['Asset type', 'Fixed Asset Number', 'Device name', 'Serial number', 'Manufacturer', 'Model', 'Location', 'Management IP', 'Firmware version', 'UPS Capacity (VA)', 'Battery replacement date', 'OS', 'Compliance', 'Primary user email address', 'IntuneGroup.GroupName', 'IntuneGroup.GroupTag', 'Last check-in', 'Total storage (GB)', 'Warranty Start Date', 'Warranty End Date', 'Warranty Match Status', ...REPLACEMENT_COLUMNS];
 
     return `
       <div class="layout-controls">
@@ -433,7 +510,7 @@ App.registerModule('inventory', (() => {
           ${available.map((column) => `
             <label class="layout-option">
               <input type="checkbox" data-column="${column}" ${layout.includes(column) ? 'checked' : ''} />
-              ${column === 'IntuneGroup.GroupTag' ? 'Group tag' : column}
+              ${column === 'IntuneGroup.GroupTag' ? 'Group tag' : column === 'Asset type' ? 'Device type' : column}
             </label>
           `).join('')}
         </div>
@@ -544,8 +621,10 @@ App.registerModule('inventory', (() => {
   }
 
   const EDITABLE_FIELDS = [
-    ['Device ID', 'Device ID'], ['Device name', 'Device name'], ['Serial number', 'Serial number'],
+    ['Fixed Asset Number', 'Fixed Asset Number'], ['Device ID', 'Device ID'], ['Device name', 'Device name'], ['Serial number', 'Serial number'],
     ['Manufacturer', 'Manufacturer'], ['Model', 'Model'], ['Ownership', 'Ownership'],
+    ['Location', 'Location'], ['Management IP', 'Management IP'], ['Firmware version', 'Firmware version'],
+    ['UPS Capacity (VA)', 'UPS Capacity (VA)'], ['Battery replacement date', 'Battery replacement date'],
     ['Compliance', 'Compliance'], ['OS', 'OS'], ['OS version', 'OS version'],
     ['Primary user display name', 'Primary user display name'], ['Primary user email address', 'Primary user email address'],
     ['IntuneGroup.GroupName', 'Group name'], ['IntuneGroup.GroupTag', 'Group tag'],
@@ -628,21 +707,24 @@ App.registerModule('inventory', (() => {
     });
   }
 
-  function openDeviceForm(container, country, index = null) {
+  function openDeviceForm(container, country, index = null, defaultType = activeDeviceType || 'laptop') {
     const inventory = getInventory();
     const device = index === null ? {} : inventory[index];
     const isEditing = index !== null;
+    const selectedType = isEditing ? getAssetType(device) : normalizeDeviceType(defaultType);
     Modal.open({
       title: isEditing ? 'Edit device' : 'Add device',
       confirmText: isEditing ? 'Save changes' : 'Add device',
       size: 'lg',
       body: `<form id="deviceForm" class="device-form">
-        ${EDITABLE_FIELDS.map(([key, label]) => `<label class="device-form-field"><span>${escapeHtml(label)}</span><input class="form-control" name="${escapeHtml(key)}" value="${escapeHtml(device[key] || '')}" ${key === 'Device name' || key === 'Serial number' ? 'required' : ''}></label>`).join('')}
+        <label class="device-form-field"><span>Device type</span><select class="form-control" name="Asset type">${DEVICE_TYPES.map(({ value, label }) => `<option value="${value}" ${selectedType === value ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label>
+        ${EDITABLE_FIELDS.map(([key, label]) => `<label class="device-form-field"><span${key === 'Fixed Asset Number' ? ` title="${escapeHtml(FIXED_ASSET_NUMBER_HELP)}"` : ''}>${escapeHtml(label)}</span><input class="form-control" name="${escapeHtml(key)}" value="${escapeHtml(device[key] || '')}" ${key === 'Device name' || key === 'Serial number' ? 'required' : ''}></label>`).join('')}
       </form>`,
       onConfirm: () => {
         const form = document.getElementById('deviceForm');
         const formData = new FormData(form);
         const updated = { ...device };
+        updated['Asset type'] = normalizeDeviceType(formData.get('Asset type'));
         EDITABLE_FIELDS.forEach(([key]) => { updated[key] = String(formData.get(key) || '').trim(); });
         if (!updated['Device name'] || !updated['Serial number']) {
           Toast.show('Device name and serial number are required.', 'error');
@@ -701,21 +783,26 @@ App.registerModule('inventory', (() => {
     const previousGroup = container.querySelector('#inventoryGroupFilter')?.value || '';
     const previousCompliance = container.querySelector('#inventoryComplianceFilter')?.value || '';
     const rows = getInventory();
+    updateDeviceTypeNavigation();
     const history = getHistoryState();
     const groups = Array.from(new Set(rows.map((device) => device['IntuneGroup.GroupName']).filter(Boolean))).sort();
     const filteredRows = getFilteredRows(rows);
+    const categoryRows = activeDeviceType ? rows.filter((device) => getAssetType(device) === activeDeviceType) : rows;
+    const inventorySummary = activeDeviceType
+      ? `${filteredRows.length} matching records · ${categoryRows.length} ${escapeHtml(deviceTypeLabel(activeDeviceType))} devices · ${rows.length} total`
+      : `${filteredRows.length} matching records · ${rows.length} total`;
     const visibleColumns = getVisibleColumns();
 
     container.innerHTML = `
       <div class="section-header">
         <div>
-          <div class="section-title">Asset Inventory</div>
-          <div class="section-sub">${filteredRows.length} matching records · ${rows.length} total · saved in local SQLite database${dashboardFilterLabel ? ` · Dashboard: ${escapeHtml(dashboardFilterLabel)}` : ''}</div>
+          <div class="section-title">${activeDeviceType ? `${escapeHtml(deviceTypeLabel(activeDeviceType))} Inventory` : 'Asset Inventory'}</div>
+          <div class="section-sub">${inventorySummary} · saved in local SQLite database${dashboardFilterLabel ? ` · Dashboard: ${escapeHtml(dashboardFilterLabel)}` : ''}</div>
         </div>
         <div class="section-actions">
           <button class="btn btn-secondary btn-sm" id="undoInventoryBtn" ${history.undo.length ? '' : 'disabled'}>Undo</button>
           <button class="btn btn-secondary btn-sm" id="redoInventoryBtn" ${history.redo.length ? '' : 'disabled'}>Redo</button>
-          <button class="btn btn-primary btn-sm" id="addDeviceBtn">+ Add device</button>
+          <button class="btn btn-primary btn-sm" id="addDeviceBtn">+ Add ${activeDeviceType ? escapeHtml(deviceTypeLabel(activeDeviceType)) : 'device'}</button>
           <button class="btn btn-secondary btn-sm" id="importInventoryBtn">Import CSV</button>
           <button class="btn btn-secondary btn-sm" id="importWarrantyBtn">Import Warranty</button>
           <button class="btn btn-secondary btn-sm" id="exportInventoryBtn">Export CSV</button>
@@ -756,7 +843,7 @@ App.registerModule('inventory', (() => {
 
       <div class="card inventory-table-wrap">
         <table class="inventory-table">
-          <thead><tr><th><input type="checkbox" id="selectAllDevices" aria-label="Select all visible devices" ${filteredRows.length && filteredRows.every((device) => selectedDeviceIndexes.has(rows.indexOf(device))) ? 'checked' : ''}></th>${visibleColumns.map((col) => `<th>${escapeHtml(col === 'IntuneGroup.GroupTag' ? 'Group tag' : col)}</th>`).join('')}<th>Actions</th></tr></thead>
+          <thead><tr><th><input type="checkbox" id="selectAllDevices" aria-label="Select all visible devices" ${filteredRows.length && filteredRows.every((device) => selectedDeviceIndexes.has(rows.indexOf(device))) ? 'checked' : ''}></th>${visibleColumns.map((col) => `<th${col === 'Fixed Asset Number' ? ` title="${escapeHtml(FIXED_ASSET_NUMBER_HELP)}"` : ''}>${escapeHtml(col === 'IntuneGroup.GroupTag' ? 'Group tag' : col === 'Asset type' ? 'Device type' : col)}</th>`).join('')}<th>Actions</th></tr></thead>
           <tbody>${renderTableBody(filteredRows, rows)}</tbody>
         </table>
       </div>
@@ -971,7 +1058,29 @@ App.registerModule('inventory', (() => {
 
   return {
     render,
-    showDashboardResults(indexes, label) {
+  getDeviceType() {
+    return activeDeviceType;
+  },
+  getDeviceTypeLabel() {
+    return activeDeviceType ? deviceTypeLabel(activeDeviceType) : '';
+  },
+  refreshDeviceTypeNavigation() {
+    updateDeviceTypeNavigation();
+  },
+  selectDeviceType(deviceType) {
+    activeDeviceType = deviceType ? normalizeDeviceType(deviceType) : '';
+    duplicatesOnly = false;
+    warrantyStatusFilter = '';
+    dashboardRecordIndexes = null;
+    dashboardFilterLabel = '';
+    selectedDeviceIndexes.clear();
+    const container = document.getElementById('moduleContainer');
+    if (container && App.currentModule === 'inventory') {
+      clearInventoryFilters(container);
+      render(container, App.countryFilter);
+    }
+  },
+  showDashboardResults(indexes, label) {
       const inventoryCount = getInventory().length;
       if (!Array.isArray(indexes) || !indexes.every((index) => Number.isInteger(index) && index >= 0 && index < inventoryCount)) {
         throw new Error('Dashboard returned invalid inventory record indexes.');
@@ -980,6 +1089,7 @@ App.registerModule('inventory', (() => {
       dashboardFilterLabel = label;
       duplicatesOnly = false;
       warrantyStatusFilter = '';
+      activeDeviceType = '';
       selectedDeviceIndexes.clear();
       App.navigateTo('inventory');
     },
@@ -988,7 +1098,9 @@ App.registerModule('inventory', (() => {
       warrantyStatusFilter = '';
       dashboardRecordIndexes = null;
       dashboardFilterLabel = '';
+      activeDeviceType = '';
       selectedDeviceIndexes.clear();
+      updateDeviceTypeNavigation();
       const container = document.getElementById('moduleContainer');
       if (container) {
         clearInventoryFilters(container);
@@ -998,6 +1110,7 @@ App.registerModule('inventory', (() => {
     showDuplicates() {
       dashboardRecordIndexes = null;
       dashboardFilterLabel = '';
+      activeDeviceType = '';
       duplicatesOnly = true;
       warrantyStatusFilter = '';
       selectedDeviceIndexes.clear();
@@ -1008,6 +1121,7 @@ App.registerModule('inventory', (() => {
     showWarrantyMatched() {
       dashboardRecordIndexes = null;
       dashboardFilterLabel = '';
+      activeDeviceType = '';
       duplicatesOnly = false;
       warrantyStatusFilter = 'Matched';
       selectedDeviceIndexes.clear();

@@ -39,6 +39,7 @@ def connect_database(path: Path | None = None) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS inventory_devices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             position INTEGER NOT NULL,
+            device_type TEXT NOT NULL DEFAULT 'laptop',
             device_id TEXT NOT NULL DEFAULT '',
             device_name TEXT NOT NULL DEFAULT '',
             serial_number TEXT NOT NULL DEFAULT '',
@@ -79,6 +80,10 @@ def connect_database(path: Path | None = None) -> sqlite3.Connection:
         );
         """
     )
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(inventory_devices)")}
+    if "device_type" not in columns:
+        connection.execute("ALTER TABLE inventory_devices ADD COLUMN device_type TEXT NOT NULL DEFAULT 'laptop'")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_device_type ON inventory_devices(device_type)")
     return connection
 
 
@@ -116,12 +121,13 @@ def _replace_inventory(connection: sqlite3.Connection, devices: list[dict[str, A
         serial = _as_text(record, "Serial number", "IntuneGroup.SerialNumber")
         connection.execute(
             """INSERT INTO inventory_devices (
-                position, device_id, device_name, serial_number, normalized_serial,
+                position, device_type, device_id, device_name, serial_number, normalized_serial,
                 group_name, group_tag, manufacturer, model, compliance,
                 warranty_start_date, warranty_end_date, duplicate_serial, data_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 position,
+                _inventory_device_type(record),
                 _as_text(record, "Device ID"),
                 _as_text(record, "Device name"),
                 serial,
@@ -137,6 +143,25 @@ def _replace_inventory(connection: sqlite3.Connection, devices: list[dict[str, A
                 json.dumps(record, ensure_ascii=False, separators=(",", ":")),
             ),
         )
+
+
+def _inventory_device_type(record: dict[str, Any]) -> str:
+    asset_type = _as_text(record, "Asset type").strip()
+    value = (asset_type or _as_text(record, "Device type", "Device Type")).strip().casefold()
+    aliases = {
+        "": "laptop",
+        "laptop": "laptop",
+        "firewall": "firewall",
+        "ups": "ups",
+        "accesspoint": "accesspoint",
+        "access point": "accesspoint",
+        "access point": "accesspoint",
+        "switch": "switch",
+        "switches": "switch",
+    }
+    if value not in aliases and asset_type:
+        raise ValueError(f"Unsupported device type: {value}.")
+    return aliases.get(value, "laptop")
 
 
 def _replace_warranty(connection: sqlite3.Connection, records: list[dict[str, Any]]) -> None:

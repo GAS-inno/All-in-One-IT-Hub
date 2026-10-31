@@ -1,6 +1,7 @@
 """Focused tests for the SQLite inventory persistence layer and API."""
 
 import json
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -35,12 +36,56 @@ class SQLitePersistenceTests(unittest.TestCase):
     def test_inventory_records_round_trip_in_order_with_duplicates(self) -> None:
         devices = [
             {"Device ID": "A", "Device name": "Original", "Serial number": "ABC-1", "Duplicate Serial": False, "Extra": "preserved"},
-            {"Device ID": "B", "Device name": "Copy", "Serial number": "ABC-1--1", "Duplicate Serial": True},
+            {"Device ID": "B", "Device name": "Copy", "Serial number": "ABC-1--1", "Duplicate Serial": True, "Asset type": "firewall"},
         ]
         _replace_inventory(self.connection, devices)
         self.assertEqual(_read_inventory(self.connection), devices)
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM inventory_devices").fetchone()[0], 2)
         self.assertEqual(self.connection.execute("SELECT COUNT(DISTINCT normalized_serial) FROM inventory_devices").fetchone()[0], 1)
+        self.assertEqual(
+            [row[0] for row in self.connection.execute("SELECT device_type FROM inventory_devices ORDER BY position")],
+            ["laptop", "firewall"],
+        )
+
+    def test_inventory_rejects_unsupported_device_type(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported device type"):
+            _replace_inventory(self.connection, [{"Asset type": "router"}])
+
+    def test_inventory_ignores_non_category_source_device_type(self) -> None:
+        _replace_inventory(self.connection, [{"Device type": "Windows", "Device name": "Legacy field"}])
+        self.assertEqual(
+            self.connection.execute("SELECT device_type FROM inventory_devices").fetchone()[0],
+            "laptop",
+        )
+
+    def test_existing_inventory_schema_migrates_without_losing_records(self) -> None:
+        self.connection.close()
+        legacy_path = Path(self.temp_dir.name) / "legacy.sqlite3"
+        with sqlite3.connect(legacy_path) as legacy:
+            legacy.execute(
+                """CREATE TABLE inventory_devices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, position INTEGER NOT NULL,
+                    device_id TEXT NOT NULL DEFAULT '', device_name TEXT NOT NULL DEFAULT '',
+                    serial_number TEXT NOT NULL DEFAULT '', normalized_serial TEXT NOT NULL DEFAULT '',
+                    group_name TEXT NOT NULL DEFAULT '', group_tag TEXT NOT NULL DEFAULT '',
+                    manufacturer TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+                    compliance TEXT NOT NULL DEFAULT '', warranty_start_date TEXT NOT NULL DEFAULT '',
+                    warranty_end_date TEXT NOT NULL DEFAULT '', duplicate_serial INTEGER NOT NULL DEFAULT 0,
+                    data_json TEXT NOT NULL)"""
+            )
+            legacy.execute(
+                "INSERT INTO inventory_devices(position, data_json) VALUES(0, ?)",
+                ('{"Device name":"Existing laptop"}',),
+            )
+        migrated = connect_database(legacy_path)
+        try:
+            row = migrated.execute(
+                "SELECT device_type, data_json FROM inventory_devices"
+            ).fetchone()
+            self.assertEqual(row["device_type"], "laptop")
+            self.assertEqual(json.loads(row["data_json"])["Device name"], "Existing laptop")
+        finally:
+            migrated.close()
 
     def test_replacing_inventory_removes_old_records(self) -> None:
         _replace_inventory(self.connection, [{"Device name": "Old"}])
