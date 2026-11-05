@@ -1,6 +1,6 @@
 # All-in-One IT Hub
 
-A local IT asset inventory and operations dashboard built with HTML, CSS, vanilla JavaScript, Python's standard library, and SQLite. It supports Intune-style inventory CSV import, warranty matching, replacement history, device management, filtering, analytics, and CSV exports.
+A local IT asset inventory and operations dashboard built with HTML, CSS, vanilla JavaScript, Python's standard library, and SQLite. It supports Intune-style inventory CSV import, warranty matching, user-to-asset views, durable asset checkout/check-in history, device replacements, filtering, analytics, and CSV exports.
 
 > **Local-use application:** The server listens on `127.0.0.1` and SQLite is designed for one local app instance/user at a time. This is not a hosted, multi-user service. Do not expose it to the internet or a shared network without adding authentication, authorization, and an appropriate shared database/API.
 
@@ -87,6 +87,24 @@ The inventory table keeps the header, search box, and checkbox column visible wh
 
 Replacement fields shown in the table are derived from the separate replacement history and are not written into the source inventory records or inventory CSV export.
 
+Use **Backup Database** to download a consistent SQLite snapshot containing inventory, warranty, replacement, checkout/check-in, and Users data. Choose **Restore Database** and select a NexIT `.db` backup to replace the current database; NexIT validates the file before restoring and reloads the app afterward. Restore replaces all current data, so create and keep a backup before restoring. Database backup uploads are limited to 512 MB.
+
+### Users and assigned assets
+
+Open **Users** to maintain the staff directory used by asset checkout. Choose **+ Add user** to enter a name, optional email, country, and location, or **Import users CSV** to load multiple users. CSV requires a `Name`, `Full Name`, `User Name`, or `Staff Name` column; `Email`, `Country`, and `Location` are optional. Imports merge by email (or by name when email is blank) and update matching users. The list is stored in SQLite and is included in database backups.
+
+The directory also includes users inferred from imported Primary user fields and active checkout records, so existing inventory users remain available for checkout selection. User profiles list each assigned serial number once; one user may have multiple assets. A current checkout takes precedence over the imported Primary user in the directory until the asset is checked in.
+
+### Asset checkout and check-in
+
+Use **Checkout** on an inventory row and select the receiving staff member from the Users list. Their name, email, country, and location are taken from the directory; record the checkout date, optional expected return date, and notes. Use **Check in** when it is returned; the return event records who checked it in and when. **History** shows all handovers for that asset, newest first. The table shows whether an asset is available or checked out, its current custodian, and its expected return date. Overdue returns are highlighted and counted above the inventory.
+
+If an inventory row has a **Primary user email address** (or Primary user UPN), it is treated as already assigned: its status shows **Checked out**, the primary user is shown as custodian, and **Checkout** is disabled. **Check in** is enabled for assigned assets; checking in clears the Primary user assignment and returns the device to available. The Primary user email also serves as the current custodian, using the display name when one is recorded. Clear the primary-user fields in **Edit** before checking out an asset that was assigned this way (or check the device in first).
+
+Checkout and check-in events are stored as a separate, ordered history in SQLite and keyed to the normalized serial number. A valid Device ID is used only when a serial number is unavailable; placeholder IDs such as `N/A` are ignored. This prevents unrelated serials from sharing custody status when an import uses a placeholder Device ID. Re-importing or editing inventory does not replace custody records. Checkout status and events are not written into inventory CSV exports. An event remains in SQLite if its inventory row is later removed; restore the inventory record to see the associated device again. The server rejects a second active checkout for a serial until the current checkout is checked in.
+
+Inventory imports are rejected if the same serial is assigned to different Primary users.
+
 ### Warranty matching
 
 1. In **Inventory**, select **Import Warranty**.
@@ -143,6 +161,12 @@ Required header: `Serial number`.
 
 Optional headers: `Warranty Start Date`, `Warranty End Date`.
 
+### Users CSV
+
+Required header: `Name`, `Full Name`, `User Name`, or `Staff Name`.
+
+Optional headers: `Email` (or `Email Address` / `Staff Email`), `Country`, and `Location` (or `Office` / `Site`). Rows are merged into the saved Users list by email, or by name when no email is provided.
+
 ### Replacement history CSV
 
 The replacement CSV contains only replacement-event fields, not a copy of the inventory:
@@ -155,21 +179,17 @@ The replacement CSV contains only replacement-event fields, not a copy of the in
 6. Replacement Date
 7. Replacement Reason
 8. Old Device Condition
-9. Handover Eligibility
+9. Handover Eligibility (shown as Deployment Status)
 10. Lifecycle Status
 11. Remarks
 
-The app validates these fields during import and supports commas, quotes, and newlines in remarks. CSV import/export is for backup and transfer; SQLite is the app's working store.
+The app validates these fields during import and supports commas, quotes, and newlines in remarks. Deployment Status options are **Deployable**, **Un-deployable**, **Pending Assessment**, and **Recycle**. Older `Eligible for Handover` / `Not Eligible for Handover` records are converted to the new labels and saved to SQLite. CSV import/export is for backup and transfer; SQLite is the app's working store.
 
 ## Backup and restore
 
-Inventory, warranty, and replacement history are stored in the SQLite database outside the project folder. To back it up directly:
+Use **Backup Database** in Inventory to create an online backup without stopping the app. Copy the downloaded file to secure backup storage that is separate from the computer running NexIT; the browser's Downloads folder is not an off-device backup by itself. To restore, use **Restore Database** and select a trusted NexIT backup. Restore replaces the whole active database and reloads the app. The uploaded file must be a readable NexIT SQLite database and no larger than 512 MB.
 
-1. Stop the app with `Ctrl+C`.
-2. Copy `nexit-assets.db` from the database location listed above to secure backup storage.
-3. Restart the app.
-
-To restore, stop the app and replace the database file with a trusted backup, then restart. Keep backups protected because they contain device and staff information. You can also export inventory and replacement history as separate CSV backups from their respective sections.
+Backups contain device and staff information; protect them like the active database. For manual recovery, stop NexIT first, then replace `nexit-assets.db` at the database location listed above with a trusted backup and restart the app. CSV exports remain useful for transferring individual datasets, but do not include all application data and history.
 
 ## Run tests
 
@@ -193,7 +213,7 @@ The tests use temporary SQLite databases and do not need your local inventory da
 - `main.css` — shared styling and responsive layouts
 - `app.js` — module navigation, SQLite-backed storage, and shared UI helpers
 - `dashboard.js`, `dashboard_metrics.py` — dashboard UI and calculations
-- `inventory.js` — inventory, CSV import/export, warranty matching, and device actions
+- `inventory.js` — inventory, CSV import/export, warranty matching, custody, and backup/restore actions
 - `replacement-history.js` — replacement history UI, validation, matching, and CSV transfer
 - `server.py` — local HTTP server and SQLite API
 - `test_server.py`, `test_dashboard_metrics.py` — automated tests
@@ -204,6 +224,6 @@ The tests use temporary SQLite databases and do not need your local inventory da
 - The app has no sign-in, user roles, multi-user synchronization, or audit log.
 - The local server binds to `127.0.0.1`. Do not change this or expose the server to a shared network without first implementing appropriate access controls and a production server/database design.
 - Keep the SQLite database, exports, and Intune source files private. Never commit real user, device, warranty, or replacement data to a public repository.
-- There is no automatic off-device backup. Establish a regular, tested backup and restore process.
+- Database backups are user-initiated downloads; there is no automatic or off-device backup service. Establish a regular backup schedule and store copies separately.
 - GitHub Pages cannot run this app by itself because inventory and replacement changes require the Python/SQLite API.
 - Chart.js is loaded from jsDelivr, so dashboard charts need internet access.

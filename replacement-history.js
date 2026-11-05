@@ -15,7 +15,7 @@ App.registerModule('replacements', (() => {
   ];
   const REASONS = ['Out of Warranty (OOW)', 'Hardware Failure', 'Damaged Device', 'Performance Issue', 'Upgrade or Refresh', 'Other'];
   const CONDITIONS = ['Working', 'Faulty', 'Damaged', 'Not Assessed'];
-  const ELIGIBILITY = ['Eligible for Handover', 'Not Eligible for Handover', 'Pending Assessment', 'Recycle'];
+  const ELIGIBILITY = ['Deployable', 'Un-deployable', 'Pending Assessment', 'Recycle'];
   const LIFECYCLE = ['In Use', 'Available for Handover', 'Pending Assessment', 'Recycle', 'Disposed'];
   let records = [];
   let loaded = false;
@@ -30,8 +30,15 @@ App.registerModule('replacements', (() => {
 
   function initializeRecords() {
     if (loaded || !App.store.initialized) return;
-    records = App.store.get('replacementHistory');
+    const storedRecords = App.store.get('replacementHistory');
+    records = storedRecords.map((record) => ({
+      ...record,
+      'Handover Eligibility': normalizeEligibility(record['Handover Eligibility'])
+    }));
     loaded = true;
+    if (records.some((record, index) => record['Handover Eligibility'] !== storedRecords[index]['Handover Eligibility'])) {
+      void persistRecords(records);
+    }
   }
 
   async function persistRecords(nextRecords) {
@@ -53,6 +60,14 @@ App.registerModule('replacements', (() => {
 
   function serialKey(value) {
     return String(value || '').trim().toUpperCase();
+  }
+
+  function normalizeEligibility(value) {
+    const text = String(value || '').trim();
+    const key = text.toLowerCase();
+    if (key === 'eligible for handover' || key === 'deployable') return 'Deployable';
+    if (key === 'not eligible for handover' || key === 'un-deployable' || key === 'undeployable') return 'Un-deployable';
+    return ELIGIBILITY.find((option) => option.toLowerCase() === key) || text;
   }
 
   function localToday() {
@@ -137,7 +152,7 @@ App.registerModule('replacements', (() => {
       'Replacement Date': String(record['Replacement Date'] || '').trim(),
       'Replacement Reason': String(record['Replacement Reason'] || '').trim(),
       'Old Device Condition': String(record['Old Device Condition'] || '').trim(),
-      'Handover Eligibility': String(record['Handover Eligibility'] || '').trim(),
+      'Handover Eligibility': normalizeEligibility(record['Handover Eligibility']),
       'Lifecycle Status': String(record['Lifecycle Status'] || '').trim(),
       Remarks: String(record.Remarks || '').trim()
     };
@@ -245,7 +260,7 @@ App.registerModule('replacements', (() => {
       'Replacement Date': matches.map((record) => record['Replacement Date']).join(', '),
       'Replaced By Device Serial Number': matches.map((record) => record['New Device Serial Number']).join(' → '),
       'Replacement Count': matches.length,
-      'Handover Eligibility': latest?.['Handover Eligibility'] || '',
+      'Handover Eligibility': normalizeEligibility(latest?.['Handover Eligibility']),
       'Lifecycle Status': latest?.['Lifecycle Status'] || ''
     };
   }
@@ -257,16 +272,16 @@ App.registerModule('replacements', (() => {
     let recycle = 0;
     let pending = 0;
     current.forEach((record) => {
-      if (record['Handover Eligibility'] === 'Eligible for Handover') eligible += 1;
-      if (record['Handover Eligibility'] === 'Not Eligible for Handover') notEligible += 1;
+      if (record['Handover Eligibility'] === 'Deployable') eligible += 1;
+      if (record['Handover Eligibility'] === 'Un-deployable') notEligible += 1;
       if (record['Lifecycle Status'] === 'Recycle') recycle += 1;
       if (record['Handover Eligibility'] === 'Pending Assessment' || record['Lifecycle Status'] === 'Pending Assessment') pending += 1;
     });
     const values = [
       ['Total replacement records', records.length],
       ['Unique old devices replaced', current.size],
-      ['Eligible for handover', eligible],
-      ['Not eligible for handover', notEligible],
+      ['Deployable', eligible],
+      ['Un-deployable', notEligible],
       ['Marked for recycling', recycle],
       ['Pending assessment', pending]
     ];
@@ -276,10 +291,11 @@ App.registerModule('replacements', (() => {
   }
 
   function statusBadge(value) {
-    const color = value === 'Recycle' || value === 'Not Eligible for Handover' || value === 'Disposed' ? 'badge-red'
+    const normalized = normalizeEligibility(value);
+    const color = normalized === 'Recycle' || normalized === 'Un-deployable' || normalized === 'Disposed' ? 'badge-red'
       : value === 'Pending Assessment' ? 'badge-orange'
-        : value === 'Eligible for Handover' || value === 'Available for Handover' || value === 'In Use' ? 'badge-green' : 'badge-gray';
-    return `<span class="badge ${color}">${escapeHtml(value || '—')}</span>`;
+        : normalized === 'Deployable' || value === 'Available for Handover' || value === 'In Use' ? 'badge-green' : 'badge-gray';
+    return `<span class="badge ${color}">${escapeHtml(normalized || '—')}</span>`;
   }
 
   function filteredRecords() {
@@ -403,8 +419,8 @@ App.registerModule('replacements', (() => {
           <label class="device-form-field">Old Device Condition *
             <select class="form-control" name="Old Device Condition" required>${selectOptions(CONDITIONS, record['Old Device Condition'], 'Select condition')}</select>
           </label>
-          <label class="device-form-field">Handover Eligibility *
-            <select class="form-control" name="Handover Eligibility" required>${selectOptions(ELIGIBILITY, record['Handover Eligibility'], 'Select eligibility')}</select>
+          <label class="device-form-field">Deployment status *
+            <select class="form-control" name="Handover Eligibility" required>${selectOptions(ELIGIBILITY, normalizeEligibility(record['Handover Eligibility']), 'Select deployment status')}</select>
           </label>
           <label class="device-form-field">Lifecycle Status *
             <select class="form-control" name="Lifecycle Status" required>${selectOptions(LIFECYCLE, record['Lifecycle Status'], 'Select status')}</select>
@@ -560,7 +576,7 @@ App.registerModule('replacements', (() => {
       <div class="filter-bar replacement-filters">
         <input id="replacementSearch" class="search-input" placeholder="Search ID, staff, email, or serial..." value="${escapeHtml(search)}">
         <select id="replacementReasonFilter" class="form-control replacement-filter">${selectOptions(REASONS, reasonFilter, 'All reasons')}</select>
-        <select id="replacementEligibilityFilter" class="form-control replacement-filter">${selectOptions(ELIGIBILITY, eligibilityFilter, 'All eligibility')}</select>
+        <select id="replacementEligibilityFilter" class="form-control replacement-filter">${selectOptions(ELIGIBILITY, eligibilityFilter, 'All deployment status')}</select>
         <select id="replacementLifecycleFilter" class="form-control replacement-filter">${selectOptions(LIFECYCLE, lifecycleFilter, 'All lifecycle')}</select>
         <label class="replacement-date-filter">From <input id="replacementDateFrom" type="date" class="form-control" value="${escapeHtml(dateFrom)}"></label>
         <label class="replacement-date-filter">To <input id="replacementDateTo" type="date" class="form-control" value="${escapeHtml(dateTo)}"></label>
@@ -578,7 +594,7 @@ App.registerModule('replacements', (() => {
             <th>Replacement ID</th><th>Staff Member Name</th><th>Staff Email</th>
             <th>Old Device Serial Number</th><th>Old Device Name</th>
             <th>New Device Serial Number</th><th>New Device Name</th><th>Replacement Date</th>
-            <th>Replacement Reason</th><th>Old Device Condition</th><th>Handover Eligibility</th>
+            <th>Replacement Reason</th><th>Old Device Condition</th><th>Deployment Status</th>
             <th>Lifecycle Status</th><th>Remarks</th><th>Actions</th>
           </tr></thead>
           <tbody>${renderRows(rows)}</tbody>

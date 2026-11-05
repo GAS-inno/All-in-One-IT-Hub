@@ -237,6 +237,7 @@ body {
   color: var(--text-primary);
 }
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+#inventorySettingsHost { display: flex; align-items: center; }
 
 /* ── Country Filter ── */
 .country-filter {
@@ -777,6 +778,38 @@ input[type="date"].form-control::-webkit-calendar-picker-indicator { filter: inv
 }
 .section-sub { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
 .section-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.inventory-settings-dropdown { position: relative; flex: 0 0 auto; }
+.inventory-settings-dropdown > summary { list-style: none; cursor: pointer; white-space: nowrap; }
+.inventory-settings-dropdown > summary::-webkit-details-marker { display: none; }
+.inventory-settings-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  display: none;
+  flex-direction: column;
+  min-width: 190px;
+  padding: 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+.inventory-settings-dropdown[open] .inventory-settings-menu { display: flex; }
+.inventory-settings-action {
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.inventory-settings-action:hover,
+.inventory-settings-action:focus-visible { background: var(--bg-hover); color: var(--text-primary); outline: none; }
 
 /* ============================================
    EMPTY STATE
@@ -841,6 +874,8 @@ input[type="date"].form-control::-webkit-calendar-picker-indicator { filter: inv
 @media (max-width: 480px) {
   .stats-grid { grid-template-columns: 1fr 1fr; }
   .btn { padding: 7px 12px; }
+  #inventorySettingsHost .inventory-settings-dropdown > summary { font-size: 0; padding: 7px 9px; }
+  #inventorySettingsHost .inventory-settings-dropdown > summary::before { content: "⚙"; font-size: 14px; }
   .modal { margin: 16px; max-width: calc(100% - 32px); }
 }
 
@@ -849,6 +884,7 @@ input[type="date"].form-control::-webkit-calendar-picker-indicator { filter: inv
 .inventory-table-wrap { width: 100%; padding: 0; overflow: auto; max-height: 70vh; }
 .inventory-table { min-width: 1180px; }
 .inventory-table col.column-hidden { display: none !important; }
+.inventory-table [data-layout-column].column-hidden { display: none !important; }
 .inventory-table thead th { position: sticky; top: 0; z-index: 4; background: var(--bg-card); }
 .inventory-table thead th:first-child { left: 0; z-index: 5; }
 .inventory-table tbody td:first-child { position: sticky; left: 0; z-index: 3; background: var(--bg-card); }

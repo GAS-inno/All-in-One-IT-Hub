@@ -14,10 +14,14 @@ from server import (
     InventoryRequestHandler,
     ThreadingHTTPServer,
     _read_inventory,
+    _read_checkout_history,
     _read_replacement_history,
+    _read_users,
     _read_warranty,
+    _replace_checkout_history,
     _replace_inventory,
     _replace_replacement_history,
+    _replace_users,
     _replace_warranty,
     connect_database,
 )
@@ -57,6 +61,21 @@ class SQLitePersistenceTests(unittest.TestCase):
             self.connection.execute("SELECT device_type FROM inventory_devices").fetchone()[0],
             "laptop",
         )
+
+    def test_inventory_allows_multiple_serials_per_primary_user(self) -> None:
+        devices = [
+            {"Device name": "Laptop 1", "Serial number": "SN-1", "Primary user display name": "Alex User", "Primary user email address": "alex@example.com"},
+            {"Device name": "Laptop 2", "Serial number": "SN-2", "Primary user display name": "Alex User", "Primary user email address": "alex@example.com"},
+        ]
+        _replace_inventory(self.connection, devices)
+        self.assertEqual(_read_inventory(self.connection), devices)
+
+    def test_inventory_rejects_serial_assigned_to_multiple_primary_users(self) -> None:
+        with self.assertRaisesRegex(ValueError, "only one primary user"):
+            _replace_inventory(self.connection, [
+                {"Device name": "Laptop 1", "Serial number": "SN-1", "Primary user display name": "Alex User", "Primary user email address": "alex@example.com"},
+                {"Device name": "Laptop 2", "Serial number": "SN-1--1", "Primary user display name": "Sam User", "Primary user email address": "sam@example.com"},
+            ])
 
     def test_existing_inventory_schema_migrates_without_losing_records(self) -> None:
         self.connection.close()
@@ -128,6 +147,87 @@ class SQLitePersistenceTests(unittest.TestCase):
             ])
         self.assertEqual(_read_replacement_history(self.connection), existing)
 
+    def test_checkout_history_round_trips_in_order(self) -> None:
+        records = [
+            {
+                "Event ID": "evt-001", "Asset key": "device:intune-1", "Event type": "checkout",
+                "Event date": "2026-11-01", "Staff name": "Alex User", "Expected return date": "2026-11-20",
+            },
+            {
+                "Event ID": "evt-002", "Asset key": "device:intune-1", "Event type": "checkin",
+                "Event date": "2026-11-15", "Staff name": "Alex User", "Expected return date": "",
+            },
+        ]
+        _replace_checkout_history(self.connection, records)
+        self.assertEqual(_read_checkout_history(self.connection), records)
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM checkout_history").fetchone()[0], 2)
+
+    def test_invalid_checkout_history_does_not_replace_saved_events(self) -> None:
+        existing = [{
+            "Event ID": "evt-001", "Asset key": "device:intune-1", "Event type": "checkout",
+            "Event date": "2026-11-01", "Staff name": "Alex User",
+        }]
+        _replace_checkout_history(self.connection, existing)
+        with self.assertRaisesRegex(ValueError, "Duplicate checkout event ID"):
+            _replace_checkout_history(self.connection, [
+                *existing,
+                {**existing[0], "Event ID": "EVT-001"},
+            ])
+        self.assertEqual(_read_checkout_history(self.connection), existing)
+        with self.assertRaisesRegex(ValueError, "Expected return date cannot be before"):
+            _replace_checkout_history(self.connection, [{
+                **existing[0], "Event ID": "evt-002", "Expected return date": "2026-10-31",
+            }])
+        self.assertEqual(_read_checkout_history(self.connection), existing)
+
+    def test_checkout_history_allows_one_user_multiple_serials(self) -> None:
+        records = [
+            {
+                "Event ID": "evt-001", "Asset key": "device:n/a", "Device ID": "N/A",
+                "Serial number": "SN-1", "Event type": "checkout", "Event date": "2026-11-01",
+                "Staff name": "Alex User",
+            },
+            {
+                "Event ID": "evt-002", "Asset key": "device:n/a", "Device ID": "N/A",
+                "Serial number": "SN-2", "Event type": "checkout", "Event date": "2026-11-01",
+                "Staff name": "Alex User",
+            },
+        ]
+        _replace_checkout_history(self.connection, records)
+        self.assertEqual(_read_checkout_history(self.connection), records)
+
+    def test_users_round_trip_with_country_and_location(self) -> None:
+        users = [
+            {"User ID": "USER-1", "Name": "Alex User", "Email": "alex@example.com", "Country": "Singapore", "Location": "HQ"},
+            {"User ID": "USER-2", "Name": "Sam User", "Email": "", "Country": "Australia", "Location": "Sydney"},
+        ]
+        _replace_users(self.connection, users)
+        self.assertEqual(_read_users(self.connection), users)
+
+    def test_users_reject_missing_name_and_duplicate_email(self) -> None:
+        with self.assertRaisesRegex(ValueError, "User ID and Name"):
+            _replace_users(self.connection, [{"User ID": "USER-1", "Name": ""}])
+        with self.assertRaisesRegex(ValueError, "Duplicate user email"):
+            _replace_users(self.connection, [
+                {"User ID": "USER-1", "Name": "Alex", "Email": "alex@example.com"},
+                {"User ID": "USER-2", "Name": "Alex 2", "Email": "ALEX@example.com"},
+            ])
+
+    def test_checkout_history_rejects_multiple_active_staff_for_one_serial(self) -> None:
+        with self.assertRaisesRegex(ValueError, "already checked out"):
+            _replace_checkout_history(self.connection, [
+                {
+                    "Event ID": "evt-001", "Asset key": "device:first", "Device ID": "first",
+                    "Serial number": "SN-1", "Event type": "checkout", "Event date": "2026-11-01",
+                    "Staff name": "Alex User",
+                },
+                {
+                    "Event ID": "evt-002", "Asset key": "device:second", "Device ID": "second",
+                    "Serial number": "SN-1--1", "Event type": "checkout", "Event date": "2026-11-02",
+                    "Staff name": "Sam User",
+                },
+            ])
+
 
 class SQLiteApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -151,6 +251,19 @@ class SQLiteApiTests(unittest.TestCase):
             self.base_url + path,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read())
+
+    def request_bytes(self, path: str, method: str, payload: bytes) -> tuple[int, dict[str, object]]:
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=payload,
+            headers={"Content-Type": "application/octet-stream"},
             method=method,
         )
         try:
@@ -192,6 +305,28 @@ class SQLiteApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("JSON array", result["error"])
 
+    def test_inventory_api_rejects_conflicting_primary_user_for_serial(self) -> None:
+        original = [{
+            "Device name": "Laptop 1", "Serial number": "SN-1",
+            "Primary user display name": "Alex User", "Primary user email address": "alex@example.com",
+        }]
+        status, _ = self.request_json("/api/inventory", "PUT", original)
+        self.assertEqual(status, 200)
+
+        status, result = self.request_json("/api/inventory", "PUT", [
+            *original,
+            {
+                "Device name": "Laptop copy", "Serial number": "SN-1--1",
+                "Primary user display name": "Sam User", "Primary user email address": "sam@example.com",
+            },
+        ])
+        self.assertEqual(status, 400)
+        self.assertIn("only one primary user", result["error"])
+
+        status, data = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["inventory"], original)
+
     def test_replacement_history_persists_through_inventory_import(self) -> None:
         records = [{
             "Replacement ID": "REP-0001",
@@ -215,6 +350,120 @@ class SQLiteApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(reloaded["replacementHistory"], records)
         self.assertEqual(reloaded["inventory"], inventory)
+
+    def test_checkout_history_persists_through_inventory_import(self) -> None:
+        status, bootstrap = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
+        self.assertEqual(status, 200)
+        self.assertEqual(bootstrap["checkoutHistory"], [])
+
+        events = [{
+            "Event ID": "evt-001", "Asset key": "device:intune-1", "Device ID": "intune-1",
+            "Device name": "Laptop 1", "Serial number": "SN-1", "Event type": "checkout",
+            "Event date": "2026-11-01", "Staff name": "Alex User", "Staff email": "alex@example.com",
+            "Expected return date": "2026-11-20", "Notes": "Temporary loan",
+        }]
+        status, saved = self.request_json("/api/checkout-history", "PUT", events)
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["saved"], 1)
+
+        inventory = [{"Device ID": "intune-1", "Device name": "Updated by Intune", "Serial number": "SN-1"}]
+        status, inventory_saved = self.request_json("/api/inventory", "PUT", inventory)
+        self.assertEqual(status, 200)
+        self.assertEqual(inventory_saved["saved"], 1)
+
+        status, reloaded = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
+        self.assertEqual(status, 200)
+        self.assertEqual(reloaded["checkoutHistory"], events)
+        self.assertEqual(reloaded["inventory"], inventory)
+
+    def test_users_api_round_trip(self) -> None:
+        users = [{
+            "User ID": "USER-1", "Name": "Alex User", "Email": "alex@example.com",
+            "Country": "Singapore", "Location": "HQ",
+        }]
+        status, bootstrap = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
+        self.assertEqual(status, 200)
+        self.assertEqual(bootstrap["users"], [])
+        status, saved = self.request_json("/api/users", "PUT", users)
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["saved"], 1)
+        status, reloaded = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
+        self.assertEqual(status, 200)
+        self.assertEqual(reloaded["users"], users)
+
+    def test_users_api_rejects_duplicate_emails_without_replacing_existing(self) -> None:
+        existing = [{"User ID": "USER-1", "Name": "Existing", "Email": "existing@example.com"}]
+        self.assertEqual(self.request_json("/api/users", "PUT", existing)[0], 200)
+        status, result = self.request_json("/api/users", "PUT", [
+            {"User ID": "USER-2", "Name": "Alex", "Email": "same@example.com"},
+            {"User ID": "USER-3", "Name": "Sam", "Email": "SAME@example.com"},
+        ])
+        self.assertEqual(status, 400)
+        self.assertIn("Duplicate user email", result["error"])
+        self.assertEqual(self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})[1]["users"], existing)
+
+    def test_checkout_history_api_rejects_invalid_record(self) -> None:
+        status, result = self.request_json("/api/checkout-history", "PUT", [{
+            "Event ID": "evt-001", "Asset key": "device:intune-1", "Event type": "checkout",
+            "Event date": "11/01/2026", "Staff name": "Alex User",
+        }])
+        self.assertEqual(status, 400)
+        self.assertIn("YYYY-MM-DD", result["error"])
+
+    def test_backup_download_and_restore_round_trip_all_records(self) -> None:
+        inventory = [{"Device ID": "DEVICE-1", "Device name": "Backup laptop", "Serial number": "SN-1"}]
+        warranty = [{"Serial number": "SN-1", "Warranty End Date": "2027-01-01"}]
+        replacements = [{"Replacement ID": "REP-1", "Old Device Serial Number": "SN-0"}]
+        checkouts = [{
+            "Event ID": "EVT-1", "Asset key": "device:device-1", "Event type": "checkout",
+            "Event date": "2026-11-01", "Staff name": "Alex User",
+        }]
+        users = [{
+            "User ID": "USER-1", "Name": "Alex User", "Email": "alex@example.com",
+            "Country": "Singapore", "Location": "HQ",
+        }]
+        for path, records in (
+            ("/api/inventory", inventory),
+            ("/api/warranty", warranty),
+            ("/api/replacement-history", replacements),
+            ("/api/checkout-history", checkouts),
+            ("/api/users", users),
+        ):
+            status, result = self.request_json(path, "PUT", records)
+            self.assertEqual(status, 200, result)
+
+        with urllib.request.urlopen(self.base_url + "/api/backup") as response:
+            backup = response.read()
+            self.assertEqual(response.status, 200)
+            self.assertIn("attachment;", response.headers["Content-Disposition"])
+        self.assertTrue(backup.startswith(b"SQLite format 3"))
+
+        status, result = self.request_json("/api/inventory", "PUT", [{"Device name": "Changed"}])
+        self.assertEqual(status, 200)
+        status, restored = self.request_bytes("/api/restore", "POST", backup)
+        self.assertEqual(status, 200, restored)
+        self.assertTrue(restored["restored"])
+
+        status, data = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["inventory"], inventory)
+        self.assertEqual(data["warranty"], warranty)
+        self.assertEqual(data["replacementHistory"], replacements)
+        self.assertEqual(data["checkoutHistory"], checkouts)
+        self.assertEqual(data["users"], users)
+
+    def test_invalid_backup_restore_preserves_current_database(self) -> None:
+        inventory = [{"Device name": "Keep this record", "Serial number": "SN-KEEP"}]
+        status, result = self.request_json("/api/inventory", "PUT", inventory)
+        self.assertEqual(status, 200)
+
+        status, result = self.request_bytes("/api/restore", "POST", b"not a sqlite database")
+        self.assertEqual(status, 400)
+        self.assertIn("SQLite", result["error"])
+
+        status, data = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["inventory"], inventory)
 
     def test_replacement_history_api_rejects_case_insensitive_duplicate_ids(self) -> None:
         status, result = self.request_json("/api/replacement-history", "PUT", [

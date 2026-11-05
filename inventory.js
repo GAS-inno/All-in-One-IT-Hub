@@ -1,6 +1,7 @@
 App.registerModule('inventory', (() => {
   const STORAGE_KEY = 'inventory';
   const WARRANTY_KEY = 'warranty';
+  const CHECKOUT_HISTORY_KEY = 'checkoutHistory';
   const DEVICE_TYPES = [
     { value: 'laptop', label: 'Laptop', navLabel: 'Laptop' },
     { value: 'firewall', label: 'Firewall', navLabel: 'Firewall' },
@@ -30,6 +31,7 @@ App.registerModule('inventory', (() => {
     'WindowsVersion', 'Total storage (GB)', 'Location', 'Management IP', 'Firmware version',
     'UPS Capacity (VA)', 'Battery replacement date', 'Warranty Start Date', 'Warranty End Date', 'Warranty Match Status', 'Age', 'Active device status'
   ];
+  const CHECKOUT_COLUMNS = ['Custody Status', 'Current Custodian', 'Expected Return Date'];
   const REPLACEMENT_COLUMNS = [
     'Replacement Status', 'Replaced For Staff Member', 'Replacement Date',
     'Replaced By Device Serial Number', 'Replacement Count', 'Handover Eligibility', 'Lifecycle Status'
@@ -39,13 +41,14 @@ App.registerModule('inventory', (() => {
     'Management IP', 'Firmware version', 'UPS Capacity (VA)', 'Battery replacement date', 'Compliance',
     'Primary user email address', 'IntuneGroup.GroupName', 'IntuneGroup.GroupTag',
     'Last check-in', 'Total storage (GB)', 'Warranty Start Date', 'Warranty End Date', 'Age',
-    'Warranty Match Status', 'Active device status', ...REPLACEMENT_COLUMNS
+    'Warranty Match Status', 'Active device status', ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS
   ];
   const LAYOUT_COLUMNS = [
     'Asset type', 'Fixed Asset Number', 'Device name', 'Country', 'Serial number', 'Manufacturer', 'Model', 'Location',
     'Management IP', 'Firmware version', 'UPS Capacity (VA)', 'Battery replacement date', 'OS', 'Compliance',
     'Primary user email address', 'IntuneGroup.GroupName', 'IntuneGroup.GroupTag', 'Last check-in', 'Active device status',
-    'Total storage (GB)', 'Warranty Start Date', 'Warranty End Date', 'Age', 'Warranty Match Status', ...REPLACEMENT_COLUMNS
+    'Total storage (GB)', 'Warranty Start Date', 'Warranty End Date', 'Age', 'Warranty Match Status',
+    ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS
   ];
 
   function normalizeHeader(value) {
@@ -61,6 +64,8 @@ App.registerModule('inventory', (() => {
   let dashboardFilterLabel = '';
   let selectedDeviceIndexes = new Set();
   let activeDeviceType = '';
+  let checkoutIndexSource = null;
+  let checkoutIndexes = { current: new Map(), assetKeys: new Set() };
 
   function normalizeDeviceType(value = '') {
     const normalized = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -194,18 +199,149 @@ App.registerModule('inventory', (() => {
     App.store.set(WARRANTY_KEY, Array.isArray(list) ? list : []);
   }
 
+  function getCheckoutHistory() {
+    const records = App.store.get(CHECKOUT_HISTORY_KEY);
+    return Array.isArray(records) ? records : [];
+  }
+
+  function getCheckoutIndexes() {
+    const events = getCheckoutHistory();
+    if (events !== checkoutIndexSource) {
+      const current = new Map();
+      const assetKeys = new Set();
+      events.forEach((event) => {
+        const key = getCheckoutEventAssetKey(event);
+        if (!key) return;
+        assetKeys.add(key);
+        if (event['Event type'] === 'checkout') current.set(key, event);
+        else current.delete(key);
+      });
+      checkoutIndexSource = events;
+      checkoutIndexes = { current, assetKeys };
+    }
+    return checkoutIndexes;
+  }
+
+  function normalizeAssetIdentifier(value) {
+    const identifier = String(value || '').trim().toLowerCase();
+    return ['n/a', 'na', 'none', 'null', 'unknown', '-'].includes(identifier) ? '' : identifier;
+  }
+
+  function getAssetSerial(record) {
+    return [record['Serial number'], record['IntuneGroup.SerialNumber']]
+      .map(normalizeSerialKey)
+      .find((serial) => serial && normalizeAssetIdentifier(serial)) || '';
+  }
+
+  function getAssetKey(device) {
+    const serial = getAssetSerial(device);
+    if (serial) return `serial:${serial}`;
+    const deviceId = normalizeAssetIdentifier(device['Device ID']);
+    return deviceId ? `device:${deviceId}` : '';
+  }
+
+  function getCheckoutEventAssetKey(event) {
+    const serial = getAssetSerial(event);
+    if (serial) return `serial:${serial}`;
+    const deviceId = normalizeAssetIdentifier(event['Device ID']);
+    if (deviceId) return `device:${deviceId}`;
+    const legacyKey = String(event['Asset key'] || '').trim().toLowerCase();
+    if (!legacyKey || /^device:(n\/a|na|none|null|unknown|-)$/.test(legacyKey)) return '';
+    return legacyKey;
+  }
+
+  function getCurrentCheckout(device) {
+    const assetKey = getAssetKey(device);
+    if (!assetKey) return null;
+    return getCheckoutIndexes().current.get(assetKey) || null;
+  }
+
+  function getPrimaryUser(device) {
+    const email = String(device['Primary user email address'] || device['Primary user UPN'] || '').trim();
+    const name = String(device['Primary user display name'] || '').trim();
+    return email ? { name: name || email, email } : null;
+  }
+
+  function isDeviceAssigned(device) {
+    return Boolean(getCurrentCheckout(device) || getPrimaryUser(device));
+  }
+
+  function getTodayDate() {
+    const today = new Date();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${today.getFullYear()}-${month}-${day}`;
+  }
+
+  function isReturnOverdue(event) {
+    return Boolean(event?.['Expected return date'] && event['Expected return date'] < getTodayDate());
+  }
+
+  async function downloadDatabaseBackup() {
+    try {
+      const response = await fetch('/api/backup');
+      if (!response.ok) {
+        const result = await response.json();
+        throw new Error(result.error || `HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      const filename = response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]
+        || `nexit-backup-${getTodayDate()}.db`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      Toast.show('Database backup downloaded. Store it somewhere safe.', 'success', 6000);
+    } catch (error) {
+      Toast.show(`Could not download database backup: ${error.message || error}`, 'error', 7000);
+    }
+  }
+
+  function confirmDatabaseRestore(file) {
+    if (!file) return;
+    Modal.open({
+      title: 'Restore database backup?',
+      confirmText: 'Restore backup',
+      onOpen: () => { document.getElementById('modalConfirm').className = 'btn btn-danger'; },
+      body: `<p><strong>This replaces all current NexIT data</strong>, including inventory, warranty, replacement history, and checkout/check-in history, with the contents of the selected backup.</p>
+        <p>Selected file: <strong>${escapeHtml(file.name)}</strong> (${(file.size / (1024 * 1024)).toFixed(1)} MB)</p>
+        <p>Only a validated NexIT SQLite backup will be accepted. After restoring, the app reloads to show the restored records.</p>`,
+      onConfirm: async () => {
+        const confirmButton = document.getElementById('modalConfirm');
+        confirmButton.disabled = true;
+        try {
+          const response = await fetch('/api/restore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: await file.arrayBuffer()
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+          Modal.close();
+          Toast.show('Database restored. Reloading NexIT…', 'success', 5000);
+          setTimeout(() => window.location.reload(), 500);
+        } catch (error) {
+          confirmButton.disabled = false;
+          Toast.show(`Could not restore database: ${error.message || error}`, 'error', 7000);
+        }
+      }
+    });
+  }
+
   function getVisibleColumns() {
     try {
       const saved = JSON.parse(localStorage.getItem('nexit_inventory_layout') || 'null');
       if (!saved || !Array.isArray(saved.visible) || !saved.visible.length) return DEFAULT_VISIBLE_COLUMNS;
-      if (saved.version !== 8) {
-        const allowedColumns = [...DEFAULT_COLUMNS, ...REPLACEMENT_COLUMNS];
-        const migrated = Array.from(new Set([...saved.visible, 'Asset type', 'Fixed Asset Number', 'Country', 'Location', 'Age', 'Active device status', ...REPLACEMENT_COLUMNS]))
+      if (saved.version !== 9) {
+        const allowedColumns = [...DEFAULT_COLUMNS, ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS];
+        const migrated = Array.from(new Set([...saved.visible, 'Asset type', 'Fixed Asset Number', 'Country', 'Location', 'Age', 'Active device status', ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS]))
           .filter((col) => allowedColumns.includes(col));
         saveVisibleColumns(migrated);
         return migrated;
       }
-      const allowedColumns = [...DEFAULT_COLUMNS, ...REPLACEMENT_COLUMNS];
+      const allowedColumns = [...DEFAULT_COLUMNS, ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS];
       const visible = saved.visible.filter((col) => allowedColumns.includes(col));
       return visible.length ? visible : ['Device name'];
     } catch {
@@ -214,7 +350,7 @@ App.registerModule('inventory', (() => {
   }
 
   function saveVisibleColumns(columns) {
-    localStorage.setItem('nexit_inventory_layout', JSON.stringify({ visible: columns, version: 8 }));
+    localStorage.setItem('nexit_inventory_layout', JSON.stringify({ visible: columns, version: 9 }));
   }
 
   function toNumber(value) {
@@ -303,6 +439,7 @@ App.registerModule('inventory', (() => {
     ].find((value) => String(value || '').trim()) || 'N/A';
 
     const userEmail = record['Primary user email address'] || record['Primary User Email Address'] || record['User Principal Name'] || record['Primary user UPN'] || '';
+    const userDisplayName = record['Primary user display name'] || record['Primary User Display Name'] || '';
     const groupName = record['IntuneGroup.GroupName'] || record['IntuneGroup.Group Name'] || record['Group Name'] || '';
     const groupTag = record['IntuneGroup.GroupTag'] || record['Group tag'] || record['Group Tag'] || record['GroupTag'] || '';
     const storageRaw = record['Total storage'] || record['Total Storage'] || '';
@@ -324,7 +461,9 @@ App.registerModule('inventory', (() => {
       'Device ID': deviceId,
       'Device name': deviceName,
       'Serial number': serialFromRaw,
+      'Primary user display name': userDisplayName,
       'Primary user email address': userEmail,
+      'Primary user UPN': record['Primary user UPN'] || record['Primary User UPN'] || record['User Principal Name'] || '',
       'IntuneGroup.GroupName': groupName,
       'IntuneGroup.GroupTag': groupTag,
       'Total storage': storageRaw,
@@ -569,6 +708,15 @@ App.registerModule('inventory', (() => {
       }
       parts.push(`${key} ${value}`.toLowerCase());
     });
+    const checkout = getCurrentCheckout(device);
+    const primaryUser = getPrimaryUser(device);
+    if (checkout || primaryUser) {
+      const custodian = checkout || primaryUser;
+      parts.push(`checked out ${custodian['Staff name'] || custodian.name} ${custodian['Staff email'] || custodian.email} ${checkout?.['Expected return date'] || ''}`);
+      if (checkout && isReturnOverdue(checkout)) parts.push('overdue');
+    } else {
+      parts.push('available');
+    }
     return parts.join(' ');
   }
 
@@ -587,6 +735,157 @@ App.registerModule('inventory', (() => {
     });
   }
 
+  function clearPrimaryUserAssignment(device) {
+    const cleared = { ...device };
+    cleared['Primary user display name'] = '';
+    cleared['Primary user email address'] = '';
+    cleared['Primary user UPN'] = '';
+    return cleared;
+  }
+
+  function openPrimaryUserCheckinModal(container, country, index) {
+    const device = getInventory()[index];
+    if (!device) return;
+    const primaryUser = getPrimaryUser(device);
+    const deviceLabel = device['Device name'] || device['Serial number'] || device['Device ID'] || 'device';
+    Modal.open({
+      title: `Check in ${deviceLabel}`,
+      confirmText: 'Check in',
+      body: `<p>Check in <strong>${escapeHtml(deviceLabel)}</strong> from <strong>${escapeHtml(primaryUser?.name || 'the assigned user')}</strong>${primaryUser?.email ? ` (${escapeHtml(primaryUser.email)})` : ''}? This clears the Primary user assignment and returns the device to available.</p>`,
+      onConfirm: async () => {
+        const inventory = getInventory().map((row, rowIndex) => (rowIndex === index ? clearPrimaryUserAssignment(row) : row));
+        try {
+          await App.store.setPrimaryUserCheckin(inventory, getCheckoutHistory());
+          Modal.close();
+          render(container, country);
+          Toast.show('Asset checked in and Primary user assignment cleared.', 'success');
+        } catch (error) {
+          Toast.show(`Could not check in asset: ${error.message || error}`, 'error', 6000);
+        }
+      }
+    });
+  }
+
+  function openCheckoutForm(container, country, index, eventType) {
+    const device = getInventory()[index];
+    if (!device) return;
+    const assetKey = getAssetKey(device);
+    if (!assetKey) {
+      Toast.show('This device needs a Device ID or serial number before it can be checked out.', 'warning');
+      return;
+    }
+    const currentCheckout = getCurrentCheckout(device);
+    const primaryUser = getPrimaryUser(device);
+    if (eventType === 'checkout' && currentCheckout) {
+      Toast.show('This device is already checked out.', 'warning');
+      return;
+    }
+    if (eventType === 'checkout' && primaryUser) {
+      Toast.show(`This device is already assigned to ${primaryUser.name} (${primaryUser.email}).`, 'warning');
+      return;
+    }
+    if (eventType === 'checkin' && !currentCheckout && !primaryUser) {
+      Toast.show('This device is not currently checked out.', 'warning');
+      return;
+    }
+    if (eventType === 'checkin' && !currentCheckout && primaryUser) {
+      openPrimaryUserCheckinModal(container, country, index);
+      return;
+    }
+
+    const isCheckout = eventType === 'checkout';
+    const deviceLabel = device['Device name'] || device['Serial number'] || device['Device ID'] || 'device';
+    const checkoutUsers = isCheckout ? (App.modules.users?.checkoutOptions?.() || []) : [];
+    Modal.open({
+      title: isCheckout ? `Check out ${deviceLabel}` : `Check in ${deviceLabel}`,
+      confirmText: isCheckout ? 'Save checkout' : 'Save check-in',
+      size: 'lg',
+      body: `<form id="checkoutEventForm" class="device-form">
+        <p>${isCheckout ? 'Record who is taking custody of this asset.' : `Record the return of this asset from ${escapeHtml(currentCheckout['Staff name'])}.`}</p>
+        <div class="form-grid">
+          ${isCheckout
+            ? `<label class="form-grid-full">Checkout to user <span class="required">*</span>
+                <select name="staffUserId" required>
+                  <option value="">Select a user from the Users list</option>
+                  ${checkoutUsers.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.name)}${user.email ? ` · ${escapeHtml(user.email)}` : ''}${user.country || user.location ? ` — ${escapeHtml([user.country, user.location].filter(Boolean).join(' / '))}` : ''}</option>`).join('')}
+                </select>
+                ${checkoutUsers.length ? '' : '<small>Add a user manually or import a CSV from the Users page before checking out an asset.</small>'}
+              </label>`
+            : `<label>Staff name <span class="required">*</span><input name="staffName" required autocomplete="name" value="${escapeHtml(currentCheckout['Staff name'])}" placeholder="Person returning the asset" /></label>
+              <label>Staff email<input name="staffEmail" type="email" autocomplete="email" value="${escapeHtml(currentCheckout['Staff email'] || '')}" /></label>`}
+          <label>${isCheckout ? 'Checkout date' : 'Check-in date'} <span class="required">*</span><input name="eventDate" type="date" required value="${getTodayDate()}" /></label>
+          ${isCheckout ? `<label>Expected return date<input name="expectedReturnDate" type="date" min="${getTodayDate()}" /></label>` : ''}
+          <label class="form-grid-full">Notes<textarea name="notes" rows="3" placeholder="Optional handover or return notes"></textarea></label>
+        </div>
+      </form>`,
+      onConfirm: async () => {
+        const form = document.getElementById('checkoutEventForm');
+        if (!form.reportValidity()) return;
+        const values = new FormData(form);
+        const eventDate = String(values.get('eventDate') || '');
+        const expectedReturnDate = String(values.get('expectedReturnDate') || '');
+        const selectedUser = isCheckout
+          ? checkoutUsers.find((user) => user.id === String(values.get('staffUserId') || ''))
+          : null;
+        if (isCheckout && !selectedUser) {
+          Toast.show('Select a user from the Users list before checking out this asset.', 'error');
+          return;
+        }
+        if (isCheckout && expectedReturnDate && expectedReturnDate < eventDate) {
+          Toast.show('Expected return date cannot be before the checkout date.', 'error');
+          return;
+        }
+        const event = {
+          'Event ID': globalThis.crypto?.randomUUID?.() || `evt-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          'Asset key': assetKey,
+          'Device ID': String(device['Device ID'] || ''),
+          'Device name': String(device['Device name'] || ''),
+          'Serial number': String(device['Serial number'] || device['IntuneGroup.SerialNumber'] || ''),
+          'Event type': eventType,
+          'Event date': eventDate,
+          'Staff name': isCheckout ? selectedUser.name : String(values.get('staffName') || '').trim(),
+          'Staff email': isCheckout ? selectedUser.email : String(values.get('staffEmail') || '').trim(),
+          'Staff country': isCheckout ? selectedUser.country : '',
+          'Staff location': isCheckout ? selectedUser.location : '',
+          'Expected return date': isCheckout ? expectedReturnDate : '',
+          Notes: String(values.get('notes') || '').trim()
+        };
+        try {
+          await App.store.set(CHECKOUT_HISTORY_KEY, [...getCheckoutHistory(), event]);
+          Modal.close();
+          render(container, country);
+          Toast.show(isCheckout ? 'Asset checked out and history saved.' : 'Asset checked in and history saved.', 'success');
+        } catch (error) {
+          Toast.show(`Could not save checkout history: ${error.message || error}`, 'error', 6000);
+        }
+      }
+    });
+  }
+
+  function openCheckoutHistory(device) {
+    const assetKey = getAssetKey(device);
+    const events = getCheckoutHistory()
+      .filter((event) => getCheckoutEventAssetKey(event) === assetKey)
+      .slice()
+      .reverse();
+    const rows = events.map((event) => `<tr>
+      <td>${escapeHtml(event['Event type'] === 'checkout' ? 'Checked out' : 'Checked in')}</td>
+      <td>${escapeHtml(event['Event date'])}</td>
+      <td>${escapeHtml(event['Staff name'])}${event['Staff email'] ? `<br><small>${escapeHtml(event['Staff email'])}</small>` : ''}</td>
+      <td>${escapeHtml(event['Expected return date'] || '—')}</td>
+      <td>${escapeHtml(event.Notes || '—')}</td>
+    </tr>`).join('');
+    Modal.open({
+      title: `Custody history · ${device['Device name'] || device['Serial number'] || 'Asset'}`,
+      confirmText: 'Close',
+      size: 'lg',
+      body: `<div class="inventory-table-wrap checkout-history-wrap"><table class="inventory-table">
+        <thead><tr><th>Event</th><th>Date</th><th>Staff</th><th>Expected return</th><th>Notes</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" class="empty-state">No custody history.</td></tr>'}</tbody>
+      </table></div>`
+    });
+  }
+
   function renderTableBody(rows, allRows) {
     const visibleColumns = getVisibleColumns();
     const allColumns = LAYOUT_COLUMNS;
@@ -596,15 +895,42 @@ App.registerModule('inventory', (() => {
       const index = allRows.indexOf(device);
       const selected = selectedDeviceIndexes.has(index);
       const replacement = App.modules.replacements?.summaryForSerial?.(device['Serial number'] || device['IntuneGroup.SerialNumber']) || {};
+      const checkout = getCurrentCheckout(device);
+      const primaryUser = getPrimaryUser(device);
+      const hasAssignedUser = Boolean(checkout || primaryUser);
+      const assetKey = getAssetKey(device);
+      const hasCheckoutHistory = assetKey && getCheckoutIndexes().assetKeys.has(assetKey);
       const cells = allColumns.map((col) => {
-        const value = REPLACEMENT_COLUMNS.includes(col) ? replacement[col] : device[col] ?? '';
+        const value = REPLACEMENT_COLUMNS.includes(col)
+          ? replacement[col]
+          : col === 'Custody Status'
+          ? hasAssignedUser ? 'Checked out' : assetKey ? 'Available' : 'Untracked'
+            : col === 'Current Custodian'
+            ? checkout
+              ? checkout['Staff name']
+              : primaryUser
+                ? primaryUser.email && primaryUser.name !== primaryUser.email
+                  ? `${primaryUser.name} (${primaryUser.email})`
+                  : primaryUser.name || primaryUser.email || ''
+                : ''
+              : col === 'Expected Return Date'
+                ? checkout?.['Expected return date'] || ''
+                : device[col] ?? '';
+        if (col === 'Custody Status') {
+          const badgeClass = hasAssignedUser ? 'badge-blue' : assetKey ? 'badge-green' : 'badge-gray';
+          return `<td><span class="badge ${badgeClass}">${escapeHtml(value)}</span></td>`;
+        }
+        if (col === 'Expected Return Date') {
+          if (!value) return '<td>—</td>';
+          return `<td>${isReturnOverdue(checkout) ? `<span class="badge badge-red">Overdue · ${escapeHtml(value)}</span>` : escapeHtml(value)}</td>`;
+        }
         if (col === 'Replacement Status') {
           const status = value || 'Not loaded';
           const badgeClass = status === 'Replaced' ? 'badge-orange' : status === 'Not replaced' ? 'badge-gray' : 'badge-gray';
           return `<td><span class="badge ${badgeClass}">${escapeHtml(status)}</span></td>`;
         }
         if (col === 'Handover Eligibility' || col === 'Lifecycle Status') {
-          return `<td>${value ? `<span class="badge ${value === 'Recycle' || value === 'Not Eligible for Handover' || value === 'Disposed' ? 'badge-red' : value === 'Pending Assessment' ? 'badge-orange' : 'badge-green'}">${escapeHtml(value)}</span>` : '—'}</td>`;
+          return `<td>${value ? `<span class="badge ${value === 'Recycle' || value === 'Un-deployable' || value === 'Disposed' ? 'badge-red' : value === 'Pending Assessment' ? 'badge-orange' : 'badge-green'}">${escapeHtml(value)}</span>` : '—'}</td>`;
         }
         if (col === 'Warranty Match Status') {
           const status = value || 'Unmatched';
@@ -631,7 +957,7 @@ App.registerModule('inventory', (() => {
         return `<td>${escapeHtml(value || '—')}</td>`;
       }).join('');
       const rowClasses = [duplicate ? 'inventory-duplicate' : '', selected ? 'inventory-selected' : ''].filter(Boolean).join(' ');
-      return `<tr class="${rowClasses}"><td><input type="checkbox" class="device-select-checkbox" data-index="${index}" aria-label="Select ${escapeHtml(device['Device name'] || 'device')}" ${selected ? 'checked' : ''}></td>${cells}<td class="inventory-row-actions"><button class="btn btn-secondary btn-sm edit-device-btn" data-index="${index}" aria-label="Edit device">Edit</button><button class="btn btn-danger btn-sm delete-device-btn" data-index="${index}" aria-label="Delete device">Delete</button></td></tr>`;
+      return `<tr class="${rowClasses}"><td><input type="checkbox" class="device-select-checkbox" data-index="${index}" aria-label="Select ${escapeHtml(device['Device name'] || 'device')}" ${selected ? 'checked' : ''}></td>${cells}<td class="inventory-row-actions"><button class="btn btn-secondary btn-sm edit-device-btn" data-index="${index}" aria-label="Edit device">Edit</button><button class="btn btn-danger btn-sm delete-device-btn" data-index="${index}" aria-label="Delete device">Delete</button><button class="btn btn-primary btn-sm checkout-device-btn" data-index="${index}" ${hasAssignedUser || !assetKey ? 'disabled' : ''}>Checkout</button><button class="btn btn-secondary btn-sm checkin-device-btn" data-index="${index}" ${hasAssignedUser ? '' : 'disabled'}${primaryUser && !checkout ? ` title="Check in to clear the Primary user assignment for this device"` : ''}>Check in</button><button class="btn btn-secondary btn-sm checkout-history-btn" data-index="${index}" ${hasCheckoutHistory ? '' : 'disabled'}>History</button></td></tr>`;
     }).join('');
   }
 
@@ -642,7 +968,8 @@ App.registerModule('inventory', (() => {
     const inactiveColumns = available.filter((column) => !layout.includes(column));
     const labelForColumn = (column) => column === 'IntuneGroup.GroupTag'
       ? 'Group tag'
-      : column === 'Asset type' ? 'Device type' : column;
+      : column === 'Asset type' ? 'Device type'
+        : column === 'Handover Eligibility' ? 'Deployment Status' : column;
 
     return `
       <div class="layout-controls">
@@ -679,12 +1006,51 @@ App.registerModule('inventory', (() => {
     controls.replaceChildren(...template.content.firstElementChild.childNodes);
     const dropdown = controls.querySelector('.inactive-layout-dropdown');
     if (dropdown) dropdown.open = dropdownWasOpen;
+    bindLayoutControlEvents(container);
   }
 
-  function applyColumnVisibility(container) {
-    const visibleColumns = new Set(getVisibleColumns());
-    container.querySelectorAll('col[data-layout-column]').forEach((column) => {
-      column.classList.toggle('column-hidden', !visibleColumns.has(column.dataset.layoutColumn));
+  function applyColumnVisibility(container, columns = getVisibleColumns()) {
+    const visibleColumns = new Set(columns);
+    container.querySelectorAll('col[data-layout-column], .inventory-table [data-layout-column]').forEach((column) => {
+      const hidden = !visibleColumns.has(column.dataset.layoutColumn);
+      column.hidden = hidden;
+      column.classList.toggle('column-hidden', hidden);
+    });
+  }
+
+  function decorateTableColumns(container) {
+    const headerCells = container.querySelectorAll('.inventory-table thead tr:first-child > th');
+    LAYOUT_COLUMNS.forEach((column, index) => {
+      headerCells[index + 1]?.setAttribute('data-layout-column', column);
+    });
+
+    container.querySelectorAll('.inventory-table tbody tr').forEach((row) => {
+      if (row.querySelector('.empty-state')) return;
+      LAYOUT_COLUMNS.forEach((column, index) => {
+        row.children[index + 1]?.setAttribute('data-layout-column', column);
+      });
+    });
+
+    applyColumnVisibility(container);
+  }
+
+  function bindLayoutControlEvents(container) {
+    const layoutControls = container.querySelector('.layout-controls');
+    if (!layoutControls) return;
+    layoutControls.querySelector('#resetLayoutBtn').addEventListener('click', () => {
+      saveVisibleColumns(DEFAULT_VISIBLE_COLUMNS);
+      applyColumnVisibility(container, DEFAULT_VISIBLE_COLUMNS);
+      refreshLayoutControls(container);
+    });
+    layoutControls.querySelectorAll('input[data-column]').forEach((checkbox) => {
+      checkbox.addEventListener('change', () => {
+        const selected = Array.from(layoutControls.querySelectorAll('input[data-column]:checked'))
+          .map((input) => input.dataset.column);
+        const visibleColumns = selected.length ? selected : ['Device name'];
+        saveVisibleColumns(visibleColumns);
+        applyColumnVisibility(container, visibleColumns);
+        refreshLayoutControls(container);
+      });
     });
   }
 
@@ -974,21 +1340,20 @@ App.registerModule('inventory', (() => {
     const inventorySummary = activeDeviceType
       ? `${filteredRows.length} matching records · ${categoryRows.length} ${escapeHtml(deviceTypeLabel(activeDeviceType))} devices · ${rows.length} total`
       : `${filteredRows.length} matching records · ${rows.length} total`;
+    const overdueCount = rows.filter((device) => isReturnOverdue(getCurrentCheckout(device))).length;
+    const inventoryStatus = overdueCount ? ` · ${overdueCount} overdue return${overdueCount === 1 ? '' : 's'}` : '';
     const visibleColumns = getVisibleColumns();
 
     container.innerHTML = `
       <div class="section-header">
         <div>
           <div class="section-title">${activeDeviceType ? `${escapeHtml(deviceTypeLabel(activeDeviceType))} Inventory` : 'Asset Inventory'}</div>
-          <div class="section-sub">${inventorySummary} · saved in local SQLite database${dashboardFilterLabel ? ` · Dashboard: ${escapeHtml(dashboardFilterLabel)}` : ''}</div>
+          <div class="section-sub">${inventorySummary}${inventoryStatus} · saved in local SQLite database${dashboardFilterLabel ? ` · Dashboard: ${escapeHtml(dashboardFilterLabel)}` : ''}</div>
         </div>
         <div class="section-actions">
           <button class="btn btn-secondary btn-sm" id="undoInventoryBtn" ${history.undo.length ? '' : 'disabled'}>Undo</button>
           <button class="btn btn-secondary btn-sm" id="redoInventoryBtn" ${history.redo.length ? '' : 'disabled'}>Redo</button>
           <button class="btn btn-primary btn-sm" id="addDeviceBtn">+ Add ${activeDeviceType ? escapeHtml(deviceTypeLabel(activeDeviceType)) : 'device'}</button>
-          <button class="btn btn-secondary btn-sm" id="importInventoryBtn">Import CSV</button>
-          <button class="btn btn-secondary btn-sm" id="importWarrantyBtn">Import Warranty</button>
-          <button class="btn btn-secondary btn-sm" id="exportInventoryBtn">Export CSV</button>
         </div>
       </div>
 
@@ -1007,15 +1372,33 @@ App.registerModule('inventory', (() => {
 
       <input id="inventoryFileInput" type="file" accept=".csv,text/csv" hidden />
       <input id="warrantyFileInput" type="file" accept=".csv,text/csv" hidden />
+      <input id="databaseBackupInput" type="file" accept=".db,.sqlite,.sqlite3,application/vnd.sqlite3" hidden />
 
       <div class="card inventory-table-wrap">
         <table class="inventory-table">
           <colgroup><col />${LAYOUT_COLUMNS.map((column) => `<col data-layout-column="${escapeHtml(column)}" ${visibleColumns.includes(column) ? '' : 'class="column-hidden"'} />`).join('')}<col /></colgroup>
-          <thead><tr><th><input type="checkbox" id="selectAllDevices" aria-label="Select all visible devices" ${filteredRows.length && filteredRows.every((device) => selectedDeviceIndexes.has(rows.indexOf(device))) ? 'checked' : ''}></th>${LAYOUT_COLUMNS.map((col) => `<th${col === 'Fixed Asset Number' ? ` title="${escapeHtml(FIXED_ASSET_NUMBER_HELP)}"` : ''}>${escapeHtml(col === 'IntuneGroup.GroupTag' ? 'Group tag' : col === 'Asset type' ? 'Device type' : col)}</th>`).join('')}<th>Actions</th></tr></thead>
+          <thead><tr><th><input type="checkbox" id="selectAllDevices" aria-label="Select all visible devices" ${filteredRows.length && filteredRows.every((device) => selectedDeviceIndexes.has(rows.indexOf(device))) ? 'checked' : ''}></th>${LAYOUT_COLUMNS.map((col) => `<th data-layout-column="${escapeHtml(col)}"${visibleColumns.includes(col) ? '' : ' class="column-hidden"'}${col === 'Fixed Asset Number' ? ` title="${escapeHtml(FIXED_ASSET_NUMBER_HELP)}"` : ''}>${escapeHtml(col === 'IntuneGroup.GroupTag' ? 'Group tag' : col === 'Asset type' ? 'Device type' : col === 'Handover Eligibility' ? 'Deployment Status' : col)}</th>`).join('')}<th>Actions</th></tr></thead>
           <tbody>${renderTableBody(filteredRows, rows)}</tbody>
         </table>
       </div>
     `;
+
+    decorateTableColumns(container);
+
+    const settingsHost = document.getElementById('inventorySettingsHost');
+    settingsHost.innerHTML = `
+      <details class="inventory-settings-dropdown">
+        <summary class="btn btn-secondary btn-sm" aria-label="Inventory settings">⚙ Settings</summary>
+        <div class="inventory-settings-menu" aria-label="Inventory settings actions">
+          <button type="button" class="inventory-settings-action" id="backupDatabaseBtn">Backup Database</button>
+          <button type="button" class="inventory-settings-action" id="restoreDatabaseBtn">Restore Database</button>
+          <button type="button" class="inventory-settings-action" id="exportInventoryBtn">Export CSV</button>
+          <button type="button" class="inventory-settings-action" id="importWarrantyBtn">Import Warranty</button>
+          <button type="button" class="inventory-settings-action" id="importInventoryBtn">Import CSV</button>
+        </div>
+      </details>
+    `;
+    const settingsDropdown = settingsHost.querySelector('.inventory-settings-dropdown');
 
     const searchBox = container.querySelector('#inventorySearch');
     const duplicatesFilter = container.querySelector('#duplicatesOnlyFilter');
@@ -1095,17 +1478,46 @@ App.registerModule('inventory', (() => {
       }
     });
     container.querySelector('#addDeviceBtn').addEventListener('click', () => openDeviceForm(container, country));
-    container.querySelector('#importInventoryBtn').addEventListener('click', () => {
+    settingsHost.querySelector('#importInventoryBtn').addEventListener('click', () => {
+      settingsDropdown.open = false;
       const input = document.getElementById('inventoryFileInput');
       input.value = '';
       input.click();
     });
-    container.querySelector('#exportInventoryBtn').addEventListener('click', exportCurrentInventory);
+    settingsHost.querySelector('#exportInventoryBtn').addEventListener('click', () => {
+      settingsDropdown.open = false;
+      exportCurrentInventory();
+    });
+    settingsHost.querySelector('#backupDatabaseBtn').addEventListener('click', () => {
+      settingsDropdown.open = false;
+      downloadDatabaseBackup();
+    });
+    settingsHost.querySelector('#restoreDatabaseBtn').addEventListener('click', () => {
+      settingsDropdown.open = false;
+      const input = container.querySelector('#databaseBackupInput');
+      input.value = '';
+      input.click();
+    });
+    container.querySelector('#databaseBackupInput').addEventListener('change', (event) => {
+      confirmDatabaseRestore(event.target.files?.[0]);
+    });
     container.querySelectorAll('.edit-device-btn').forEach((button) => {
       button.addEventListener('click', () => openDeviceForm(container, country, Number(button.dataset.index)));
     });
     container.querySelectorAll('.delete-device-btn').forEach((button) => {
       button.addEventListener('click', () => deleteDevice(container, country, Number(button.dataset.index)));
+    });
+    container.querySelectorAll('.checkout-device-btn').forEach((button) => {
+      button.addEventListener('click', () => openCheckoutForm(container, country, Number(button.dataset.index), 'checkout'));
+    });
+    container.querySelectorAll('.checkin-device-btn').forEach((button) => {
+      button.addEventListener('click', () => openCheckoutForm(container, country, Number(button.dataset.index), 'checkin'));
+    });
+    container.querySelectorAll('.checkout-history-btn').forEach((button) => {
+      button.addEventListener('click', () => {
+        const device = getInventory()[Number(button.dataset.index)];
+        if (device) openCheckoutHistory(device);
+      });
     });
 
     document.getElementById('inventoryFileInput').onchange = async (event) => {
@@ -1214,24 +1626,11 @@ App.registerModule('inventory', (() => {
       render(container, country);
     };
 
-    container.querySelector('#importWarrantyBtn').addEventListener('click', () => {
+    settingsHost.querySelector('#importWarrantyBtn').addEventListener('click', () => {
+      settingsDropdown.open = false;
       document.getElementById('warrantyFileInput').click();
     });
-    const layoutControls = container.querySelector('.layout-controls');
-    layoutControls.addEventListener('click', (event) => {
-      if (!event.target.closest('#resetLayoutBtn')) return;
-      saveVisibleColumns(DEFAULT_VISIBLE_COLUMNS);
-      applyColumnVisibility(container);
-      refreshLayoutControls(container);
-    });
-    layoutControls.addEventListener('change', (event) => {
-      const checkbox = event.target.closest('[data-column]');
-      if (!checkbox) return;
-      const selected = Array.from(layoutControls.querySelectorAll('[data-column]:checked')).map((el) => el.dataset.column);
-      saveVisibleColumns(selected.length ? selected : ['Device name']);
-      applyColumnVisibility(container);
-      refreshLayoutControls(container);
-    });
+    bindLayoutControlEvents(container);
   }
 
   function clearInventoryFilters(container) {
@@ -1246,6 +1645,13 @@ App.registerModule('inventory', (() => {
 
   return {
     render,
+    parseCsvText,
+    currentCheckoutFor(device) {
+      return getCurrentCheckout(device);
+    },
+    countryForDevice(device) {
+      return getCountryCodeFromDeviceName(device['Device name']);
+    },
   getDeviceType() {
     return activeDeviceType;
   },

@@ -17,9 +17,9 @@ const App = {
   currentModule: 'dashboard',
   countryFilter: 'all',
 
-  // Inventory, warranty, and replacement history are persisted by the local SQLite API.
+  // Inventory, warranty, replacement, and checkout histories are persisted by the local SQLite API.
   store: {
-    databaseKeys: new Set(['inventory', 'warranty', 'replacementHistory']),
+    databaseKeys: new Set(['inventory', 'warranty', 'replacementHistory', 'checkoutHistory', 'users']),
     cache: new Map(),
     writeQueues: new Map(),
     initialized: false,
@@ -44,7 +44,9 @@ const App = {
       const route = {
         inventory: '/api/inventory',
         warranty: '/api/warranty',
-        replacementHistory: '/api/replacement-history'
+        replacementHistory: '/api/replacement-history',
+        checkoutHistory: '/api/checkout-history',
+        users: '/api/users'
       }[key];
       const previousWrite = this.writeQueues.get(key) || Promise.resolve();
       const write = previousWrite.catch(() => {}).then(async () => {
@@ -64,6 +66,22 @@ const App = {
       });
       return write;
     },
+    async setPrimaryUserCheckin(inventory, checkoutHistory) {
+      await Promise.all([
+        this.writeQueues.get('inventory') || Promise.resolve(),
+        this.writeQueues.get('checkoutHistory') || Promise.resolve()
+      ]);
+      const response = await fetch('/api/checkin-primary-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inventory, checkoutHistory })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      this.cache.set('inventory', inventory);
+      this.cache.set('checkoutHistory', checkoutHistory);
+      return result;
+    },
     async initialize() {
       const readLegacy = (key) => {
         try {
@@ -81,12 +99,16 @@ const App = {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-      if (!Array.isArray(result.inventory) || !Array.isArray(result.warranty) || !Array.isArray(result.replacementHistory)) {
+      if (!Array.isArray(result.inventory) || !Array.isArray(result.warranty)
+        || !Array.isArray(result.replacementHistory) || !Array.isArray(result.checkoutHistory)
+        || !Array.isArray(result.users)) {
         throw new Error('SQLite server is out of date. Stop it, restart python3 server.py (or py server.py), then reload this page.');
       }
       this.cache.set('inventory', result.inventory);
       this.cache.set('warranty', result.warranty);
       this.cache.set('replacementHistory', result.replacementHistory);
+      this.cache.set('checkoutHistory', result.checkoutHistory);
+      this.cache.set('users', result.users);
       this.initialized = true;
       if (result.migrated) Toast.show('Existing browser inventory was copied into the local SQLite database.', 'success', 6000);
     }
@@ -127,6 +149,7 @@ const App = {
 
     // Render module
     const container = document.getElementById('moduleContainer');
+    document.getElementById('inventorySettingsHost').replaceChildren();
     container.innerHTML = '';
     container.style.animation = 'none';
     container.offsetHeight; // reflow
