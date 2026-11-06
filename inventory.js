@@ -795,6 +795,7 @@ App.registerModule('inventory', (() => {
 
     const isCheckout = eventType === 'checkout';
     const deviceLabel = device['Device name'] || device['Serial number'] || device['Device ID'] || 'device';
+    const eventTimeValue = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`;
     const checkoutUsers = isCheckout ? (App.modules.users?.checkoutOptions?.() || []) : [];
     Modal.open({
       title: isCheckout ? `Check out ${deviceLabel}` : `Check in ${deviceLabel}`,
@@ -817,7 +818,7 @@ App.registerModule('inventory', (() => {
              </div>
              <div class="form-group">
                <label class="form-label" for="eventTime">Checkout time</label>
-               <input class="form-control" id="eventTime" name="eventTime" type="time" />
+               <input class="form-control" id="eventTime" name="eventTime" type="time" value="${eventTimeValue}" />
              </div>
              <div class="form-group">
                <label class="form-label" for="expectedReturnDate">Expected return date</label>
@@ -841,7 +842,7 @@ App.registerModule('inventory', (() => {
              </div>
              <div class="form-group">
                <label class="form-label" for="eventTime">Check-in time</label>
-               <input class="form-control" id="eventTime" name="eventTime" type="time" />
+               <input class="form-control" id="eventTime" name="eventTime" type="time" value="${eventTimeValue}" />
              </div>
              <div class="form-group form-grid-full">
                <label class="form-label" for="notes">Notes</label>
