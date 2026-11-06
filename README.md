@@ -97,7 +97,7 @@ Open **Users** to maintain the staff directory used by asset checkout. Choose **
 
 The directory also includes users inferred from imported Primary user fields and active checkout records, so existing inventory users remain available for checkout selection. User profiles list each assigned serial number once; one user may have multiple assets. A current checkout takes precedence over the imported Primary user in the directory until the asset is checked in.
 
-The Users list includes a search box that filters the staff directory by name or email address. The filter combines with the country filter and updates the list of users shown.
+The Users list includes a search box that filters the staff directory by name or email address. The filter combines with the country filter and updates the list of users shown. Use the **Assigned assets (count)** filter to show only users with a specific number of assigned assets. Each user row supports **Delete** for a single user or **Delete selected** for bulk deletion; deleting a user clears the Primary user assignment on their assigned devices. Adding a user with an email that already exists merges into the existing user record instead of creating a duplicate.
 
 ### Asset checkout and check-in
 

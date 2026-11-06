@@ -2,6 +2,8 @@ App.registerModule('users', (() => {
   let selectedUserKey = '';
   let countryFilter = 'all';
   let userSearch = '';
+  let userAssetCountFilter = '';
+  let selectedUserIndexes = new Set();
   const COUNTRY_CODES = {
     singapore: 'SG', australia: 'AU', malaysia: 'MY', thailand: 'TH', india: 'IN',
     indonesia: 'ID', vietnam: 'VN', philippines: 'PH', japan: 'JP', 'united states': 'US'
@@ -193,18 +195,28 @@ App.registerModule('users', (() => {
           Location: String(values.get('location') || '').trim()
         };
         const current = storedUsers();
-        const duplicate = current.find((user) => record.Email
+        const duplicateIndex = current.findIndex((user) => record.Email
           ? normalize(user.Email) === normalize(record.Email)
           : normalize(user.Name) === normalize(record.Name) && !user.Email);
-        if (duplicate) {
-          Toast.show(`A user with this ${record.Email ? 'email address' : 'name'} already exists.`, 'error');
-          return;
-        }
+        const mergedUser = duplicateIndex >= 0
+          ? {
+              ...current[duplicateIndex],
+              ...record,
+              'User ID': current[duplicateIndex]['User ID'],
+              Name: record.Name || current[duplicateIndex].Name,
+              Email: record.Email || current[duplicateIndex].Email,
+              Country: record.Country || current[duplicateIndex].Country,
+              Location: record.Location || current[duplicateIndex].Location
+            }
+          : record;
+        const nextUsers = duplicateIndex >= 0
+          ? current.map((user, index) => (index === duplicateIndex ? mergedUser : user))
+          : [...current, record];
         try {
-          await App.store.set('users', [...current, record]);
+          await App.store.set('users', nextUsers);
           Modal.close();
           render(container, countryFilter);
-          Toast.show('User added to the Users list.', 'success');
+          Toast.show(duplicateIndex >= 0 ? 'User merged into the existing Users list entry.' : 'User added to the Users list.', 'success');
         } catch (error) {
           Toast.show(`Could not save user: ${error.message || error}`, 'error', 6000);
         }
@@ -257,7 +269,15 @@ App.registerModule('users', (() => {
       const key = userKey(record.Email, record.Name);
       const existingIndex = merged.findIndex((user) => userKey(user.Email, user.Name) === key);
       if (existingIndex < 0) merged.push(record);
-      else merged[existingIndex] = { ...merged[existingIndex], ...record, 'User ID': merged[existingIndex]['User ID'] };
+      else merged[existingIndex] = {
+        ...merged[existingIndex],
+        ...record,
+        'User ID': merged[existingIndex]['User ID'],
+        Name: record.Name || merged[existingIndex].Name,
+        Email: record.Email || merged[existingIndex].Email,
+        Country: record.Country || merged[existingIndex].Country,
+        Location: record.Location || merged[existingIndex].Location
+      };
     });
     return merged;
   }
@@ -273,6 +293,10 @@ App.registerModule('users', (() => {
         return name.includes(needle) || email.includes(needle);
       })
       : allUsers;
+    const parsedAssetCount = Number(userAssetCountFilter);
+    const filteredUsers = userAssetCountFilter.trim() === '' || !Number.isFinite(parsedAssetCount)
+      ? users
+      : users.filter((user) => user.assets.length === parsedAssetCount);
     const selected = users.find((user) => user.key === selectedUserKey);
     if (selected) {
       container.innerHTML = `
@@ -287,39 +311,43 @@ App.registerModule('users', (() => {
       `;
       container.querySelector('#usersBackBtn').addEventListener('click', () => {
         selectedUserKey = '';
-        render(container);
+        render(container, countryFilter);
       });
       return;
     }
 
     selectedUserKey = '';
-    const assetCount = users.reduce((total, user) => total + user.assets.length, 0);
+    selectedUserIndexes.clear();
+    const assetCount = filteredUsers.reduce((total, user) => total + user.assets.length, 0);
     container.innerHTML = `
       <div class="section-header">
         <div>
           <div class="section-title">Users</div>
-          <div class="section-sub">${users.length} user${users.length === 1 ? '' : 's'} · ${assetCount} assigned serial number${assetCount === 1 ? '' : 's'}</div>
+          <div class="section-sub">${filteredUsers.length} user${filteredUsers.length === 1 ? '' : 's'} · ${assetCount} assigned serial number${assetCount === 1 ? '' : 's'}</div>
         </div>
         <div class="section-actions">
           <button class="btn btn-secondary btn-sm" id="addUserBtn">+ Add user</button>
           <button class="btn btn-primary btn-sm" id="importUsersBtn">Import users CSV</button>
+          <button class="btn btn-danger btn-sm" id="deleteUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Delete selected</button>
         </div>
       </div>
       <div class="filter-bar">
         <input id="usersSearch" class="search-input" placeholder="Search users by name or email..." value="${escapeHtml(userSearch)}" />
+        <input id="userAssetCountFilter" class="search-input" type="number" min="0" placeholder="Assigned assets (count)" value="${escapeHtml(userAssetCountFilter)}" />
       </div>
       <input id="usersFileInput" type="file" accept=".csv,text/csv" hidden />
       <div class="card inventory-table-wrap">
         <table class="inventory-table">
-          <thead><tr><th>User</th><th>Email</th><th>Country</th><th>Location</th><th>Assigned assets</th><th>Actions</th></tr></thead>
-          <tbody>${users.length ? users.map((user, index) => `<tr>
+          <thead><tr><th><input type="checkbox" id="selectAllUsers" aria-label="Select all users" /></th><th>User</th><th>Email</th><th>Country</th><th>Location</th><th>Assigned assets</th><th>Actions</th></tr></thead>
+          <tbody>${filteredUsers.length ? filteredUsers.map((user, index) => `<tr>
+            <td><input type="checkbox" class="user-select-checkbox" data-user-index="${index}" aria-label="Select user" /></td>
             <td>${escapeHtml(user.name)}</td>
             <td>${escapeHtml(user.email || '—')}</td>
             <td>${escapeHtml(user.country || '—')}</td>
             <td>${escapeHtml(user.location || '—')}</td>
             <td>${user.assets.length}</td>
-            <td><button class="btn btn-secondary btn-sm view-user-assets-btn" data-user-index="${index}">View assets</button></td>
-          </tr>`).join('') : '<tr><td colspan="6" class="empty-state">No users match your search or this country filter.</td></tr>'}</tbody>
+            <td><button class="btn btn-secondary btn-sm view-user-assets-btn" data-user-index="${index}">View assets</button><button class="btn btn-danger btn-sm delete-user-btn" data-user-index="${index}">Delete</button></td>
+          </tr>`).join('') : '<tr><td colspan="7" class="empty-state">No users match your search, asset count, or this country filter.</td></tr>'}</tbody>
         </table>
       </div>
     `;
@@ -356,10 +384,108 @@ App.registerModule('users', (() => {
         }
       }
     });
+    const userAssetCountFilterInput = container.querySelector('#userAssetCountFilter');
+    userAssetCountFilterInput.addEventListener('change', (event) => {
+      userAssetCountFilter = String(event.target.value || '');
+      render(container, countryFilter);
+    });
+    container.querySelectorAll('.user-select-checkbox').forEach((checkbox) => {
+      checkbox.addEventListener('change', () => {
+        const index = Number(checkbox.dataset.userIndex);
+        if (checkbox.checked) selectedUserIndexes.add(index);
+        else selectedUserIndexes.delete(index);
+        const deleteSelectedBtn = container.querySelector('#deleteUsersBtn');
+        if (deleteSelectedBtn) deleteSelectedBtn.disabled = selectedUserIndexes.size === 0;
+      });
+    });
+    document.getElementById('selectAllUsers').addEventListener('change', (event) => {
+      const checked = event.target.checked;
+      filteredUsers.forEach((user, index) => {
+        if (checked) selectedUserIndexes.add(index);
+        else selectedUserIndexes.delete(index);
+        const rowCheckbox = container.querySelector(`.user-select-checkbox[data-user-index="${index}"]`);
+        if (rowCheckbox) rowCheckbox.checked = checked;
+      });
+      const deleteSelectedBtn = container.querySelector('#deleteUsersBtn');
+      if (deleteSelectedBtn) deleteSelectedBtn.disabled = selectedUserIndexes.size === 0;
+    });
     container.querySelectorAll('.view-user-assets-btn').forEach((button) => {
       button.addEventListener('click', () => {
-        selectedUserKey = users[Number(button.dataset.userIndex)].key;
+        selectedUserKey = filteredUsers[Number(button.dataset.userIndex)].key;
         render(container, countryFilter);
+      });
+    });
+    container.querySelector('#deleteUsersBtn').addEventListener('click', () => {
+      const toDelete = Array.from(selectedUserIndexes).map((index) => filteredUsers[index]).filter(Boolean);
+      if (!toDelete.length) return;
+      Modal.open({
+        title: `Delete ${toDelete.length} user${toDelete.length === 1 ? '' : 's'}`,
+        confirmText: 'Delete',
+        onOpen: () => { document.getElementById('modalConfirm').className = 'btn btn-danger'; },
+        body: `<p>Delete ${toDelete.length} user${toDelete.length === 1 ? '' : 's'} from the Users list?</p>`,
+        onConfirm: async () => {
+          try {
+            const remaining = storedUsers().filter((user) => !toDelete.some((target) => userKey(user.Email, user.Name) === target.key));
+            await App.store.set('users', remaining);
+            const inventory = App.store.get('inventory');
+            if (Array.isArray(inventory)) {
+              const clearedInventory = inventory.map((device) => {
+                const email = String(device['Primary user email address'] || device['Primary user UPN'] || '').trim().toLowerCase();
+                const name = String(device['Primary user display name'] || '').trim().toLowerCase();
+                if (!toDelete.some((target) => userKey(email, name) === target.key)) return device;
+                const cleared = { ...device };
+                cleared['Primary user display name'] = '';
+                cleared['Primary user email address'] = '';
+                cleared['Primary user UPN'] = '';
+                return cleared;
+              });
+              await App.store.set('inventory', clearedInventory);
+            }
+            selectedUserIndexes.clear();
+            Modal.close();
+            render(container, countryFilter);
+            Toast.show(`Deleted ${toDelete.length} user${toDelete.length === 1 ? '' : 's'}.`, 'success');
+          } catch (error) {
+            Toast.show(`Could not delete user: ${error.message || error}`, 'error', 6000);
+          }
+        }
+      });
+    });
+    container.querySelectorAll('.delete-user-btn').forEach((button) => {
+      button.addEventListener('click', () => {
+        const user = filteredUsers[Number(button.dataset.userIndex)];
+        if (!user) return;
+        Modal.open({
+          title: 'Delete user',
+          confirmText: 'Delete',
+          onOpen: () => { document.getElementById('modalConfirm').className = 'btn btn-danger'; },
+          body: `<p>Delete <strong>${escapeHtml(user.name)}</strong>${user.email ? ` (${escapeHtml(user.email)})` : ''} from the Users list?</p>`,
+          onConfirm: async () => {
+            try {
+              const remaining = storedUsers().filter((item) => userKey(item.Email, item.Name) !== user.key);
+              await App.store.set('users', remaining);
+              const inventory = App.store.get('inventory');
+              if (Array.isArray(inventory)) {
+                const clearedInventory = inventory.map((device) => {
+                  const email = String(device['Primary user email address'] || device['Primary user UPN'] || '').trim().toLowerCase();
+                  const name = String(device['Primary user display name'] || '').trim().toLowerCase();
+                  if (userKey(email, name) !== user.key) return device;
+                  const cleared = { ...device };
+                  cleared['Primary user display name'] = '';
+                  cleared['Primary user email address'] = '';
+                  cleared['Primary user UPN'] = '';
+                  return cleared;
+                });
+                await App.store.set('inventory', clearedInventory);
+              }
+              Modal.close();
+              render(container, countryFilter);
+              Toast.show('User deleted.', 'success');
+            } catch (error) {
+              Toast.show(`Could not delete user: ${error.message || error}`, 'error', 6000);
+            }
+          }
+        });
       });
     });
   }

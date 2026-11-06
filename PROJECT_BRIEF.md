@@ -76,6 +76,9 @@ Data flow: module `render(container, country)` → reads from `App.store` cache 
 - [x] **2026-11-06:** Reworked the Download CSV Template flow to show template previews in a modal before downloading.
 - [x] **2026-11-06:** Bulk edit form now includes inputs for all inventory columns.
 - [x] **2026-11-06:** Users table search box now preserves focus and caret so multiple characters can be entered.
+- [x] **2026-11-06:** Users table now supports per-row Delete plus bulk Delete selected (checkboxes / select-all); deleting clears assigned device Primary user assignments.
+- [x] **2026-11-06:** Users table supports filtering by assigned asset count (exact count) via the "Assigned assets (count)" input.
+- [x] **2026-11-06:** User add now validates duplicate email (or duplicate name) and merges into the existing user instead of blocking.
 - [ ] Open tasks: none for this requested change; wait for the user's next feature instruction.
 - ⛔ **Known blockers / constraints:** single-user local-only app (binds `127.0.0.1:8000`, no authentication or administrative audit log); requires internet for Chart.js and Google Fonts; operational data (CSV/SQLite) is gitignored; no multi-user sync.
 
