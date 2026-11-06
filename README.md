@@ -74,7 +74,7 @@ Open **Dashboard** to view inventory metrics, filters, and charts. Use the avail
 3. If the import finds serial duplicates, choose whether to merge them with existing records or keep them separately. Kept duplicates are given a suffix and highlighted.
 4. Use the universal search box to search across all device fields — device name, user, serial, group, warranty, status, and more. The **Duplicates only** checkbox filters to duplicated serials. Visible-column checkboxes appear in one horizontal row; use **More columns** to enable hidden columns, or **Reset layout** to restore the defaults.
 5. Select a device checkbox to highlight its entire row. Use **Select all visible**, **Edit selected**, or **Delete selected** for bulk actions.
-6. Use **+ Add device**, **Edit**, or **Delete** to manage individual records. Inventory changes are saved to SQLite. **Undo** and **Redo** are available for recent inventory changes in the current page session.
+6. Use **+ Add device** or **Edit** to manage individual records. The per-row **Delete** action is not shown for Laptop inventory rows to prevent accidental deletions; bulk **Delete selected** remains available for other device types. Inventory changes are saved to SQLite. **Undo** and **Redo** are available for recent inventory changes in the current page session.
 7. Select **Export CSV** to download the inventory currently shown by the active search or filters.
 
 The inventory supports Laptop, Firewall, UPS, AccessPoint, and Switch device types in the same SQLite database. Use the device-type links below **Inventory** to filter the list; a link is shown only while at least one device of that type exists. Use **Inventory** to see all types. Existing records without an asset type remain laptops. Use **+ Add device** to choose a type and enter common details such as serial number, manufacturer, model, and location, plus network or UPS fields where relevant. CSV imports can include an `Asset type` column, or a `Device type` column containing one of the supported categories; without one they are treated as the currently selected type, or Laptop when viewing all inventory.
@@ -94,6 +94,8 @@ Use **Backup Database** to download a consistent SQLite snapshot containing inve
 Open **Users** to maintain the staff directory used by asset checkout. Choose **+ Add user** to enter a name, optional email, country, and location, or **Import users CSV** to load multiple users. CSV requires a `Name`, `Full Name`, `User Name`, or `Staff Name` column; `Email`, `Country`, and `Location` are optional. Imports merge by email (or by name when email is blank) and update matching users. The list is stored in SQLite and is included in database backups.
 
 The directory also includes users inferred from imported Primary user fields and active checkout records, so existing inventory users remain available for checkout selection. User profiles list each assigned serial number once; one user may have multiple assets. A current checkout takes precedence over the imported Primary user in the directory until the asset is checked in.
+
+The Users list includes a search box that filters the staff directory by name or email address. The filter combines with the country filter and updates the list of users shown.
 
 ### Asset checkout and check-in
 

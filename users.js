@@ -1,6 +1,7 @@
 App.registerModule('users', (() => {
   let selectedUserKey = '';
   let countryFilter = 'all';
+  let userSearch = '';
   const COUNTRY_CODES = {
     singapore: 'SG', australia: 'AU', malaysia: 'MY', thailand: 'TH', india: 'IN',
     indonesia: 'ID', vietnam: 'VN', philippines: 'PH', japan: 'JP', 'united states': 'US'
@@ -263,7 +264,15 @@ App.registerModule('users', (() => {
 
   function render(container, country = 'all') {
     countryFilter = country;
-    const users = getUsers();
+    const allUsers = getUsers();
+    const users = userSearch.trim()
+      ? allUsers.filter((user) => {
+        const needle = userSearch.trim().toLowerCase();
+        const name = String(user.name || '').toLowerCase();
+        const email = String(user.email || '').toLowerCase();
+        return name.includes(needle) || email.includes(needle);
+      })
+      : allUsers;
     const selected = users.find((user) => user.key === selectedUserKey);
     if (selected) {
       container.innerHTML = `
@@ -296,6 +305,9 @@ App.registerModule('users', (() => {
           <button class="btn btn-primary btn-sm" id="importUsersBtn">Import users CSV</button>
         </div>
       </div>
+      <div class="filter-bar">
+        <input id="usersSearch" class="search-input" placeholder="Search users by name or email..." value="${escapeHtml(userSearch)}" />
+      </div>
       <input id="usersFileInput" type="file" accept=".csv,text/csv" hidden />
       <div class="card inventory-table-wrap">
         <table class="inventory-table">
@@ -307,7 +319,7 @@ App.registerModule('users', (() => {
             <td>${escapeHtml(user.location || '—')}</td>
             <td>${user.assets.length}</td>
             <td><button class="btn btn-secondary btn-sm view-user-assets-btn" data-user-index="${index}">View assets</button></td>
-          </tr>`).join('') : '<tr><td colspan="6" class="empty-state">No users match this country filter.</td></tr>'}</tbody>
+          </tr>`).join('') : '<tr><td colspan="6" class="empty-state">No users match your search or this country filter.</td></tr>'}</tbody>
         </table>
       </div>
     `;
@@ -328,6 +340,11 @@ App.registerModule('users', (() => {
       } finally {
         event.target.value = '';
       }
+    });
+    const usersSearchInput = container.querySelector('#usersSearch');
+    usersSearchInput.addEventListener('input', (event) => {
+      userSearch = String(event.target.value || '');
+      render(container, countryFilter);
     });
     container.querySelectorAll('.view-user-assets-btn').forEach((button) => {
       button.addEventListener('click', () => {
