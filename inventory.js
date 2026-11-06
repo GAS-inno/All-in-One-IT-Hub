@@ -814,6 +814,7 @@ App.registerModule('inventory', (() => {
             : `<label>Staff name <span class="required">*</span><input name="staffName" required autocomplete="name" value="${escapeHtml(currentCheckout['Staff name'])}" placeholder="Person returning the asset" /></label>
               <label>Staff email<input name="staffEmail" type="email" autocomplete="email" value="${escapeHtml(currentCheckout['Staff email'] || '')}" /></label>`}
           <label>${isCheckout ? 'Checkout date' : 'Check-in date'} <span class="required">*</span><input name="eventDate" type="date" required value="${getTodayDate()}" /></label>
+          <label>${isCheckout ? 'Checkout time' : 'Check-in time'} <input name="eventTime" type="time" /></label>
           ${isCheckout ? `<label>Expected return date<input name="expectedReturnDate" type="date" min="${getTodayDate()}" /></label>` : ''}
           <label class="form-grid-full">Notes<textarea name="notes" rows="3" placeholder="Optional handover or return notes"></textarea></label>
         </div>
@@ -843,6 +844,7 @@ App.registerModule('inventory', (() => {
           'Serial number': String(device['Serial number'] || device['IntuneGroup.SerialNumber'] || ''),
           'Event type': eventType,
           'Event date': eventDate,
+          'Event time': String(values.get('eventTime') || ''),
           'Staff name': isCheckout ? selectedUser.name : String(values.get('staffName') || '').trim(),
           'Staff email': isCheckout ? selectedUser.email : String(values.get('staffEmail') || '').trim(),
           'Staff country': isCheckout ? selectedUser.country : '',
@@ -870,7 +872,7 @@ App.registerModule('inventory', (() => {
       .reverse();
     const rows = events.map((event) => `<tr>
       <td>${escapeHtml(event['Event type'] === 'checkout' ? 'Checked out' : 'Checked in')}</td>
-      <td>${escapeHtml(event['Event date'])}</td>
+      <td>${escapeHtml(event['Event date'])}${event['Event time'] ? ` · ${escapeHtml(event['Event time'])}` : ''}</td>
       <td>${escapeHtml(event['Staff name'])}${event['Staff email'] ? `<br><small>${escapeHtml(event['Staff email'])}</small>` : ''}</td>
       <td>${escapeHtml(event['Expected return date'] || '—')}</td>
       <td>${escapeHtml(event.Notes || '—')}</td>
