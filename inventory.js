@@ -1262,7 +1262,12 @@ App.registerModule('inventory', (() => {
     ['Warranty Start Date', 'Warranty Start Date'], ['Warranty End Date', 'Warranty End Date']
   ];
 
-  const BULK_EDIT_FIELDS = [['Asset type', 'Device type'], ...EDITABLE_FIELDS];
+  const BULK_EDIT_FIELDS = [
+    ['Asset type', 'Device type'],
+    ...DEFAULT_COLUMNS.filter((column) => column !== 'Asset type').map((column) => [column, column]),
+    ...CHECKOUT_COLUMNS.map((column) => [column, column]),
+    ...REPLACEMENT_COLUMNS.map((column) => [column, column])
+  ];
 
   function applyBulkEdit(container, country) {
     const indexes = Array.from(selectedDeviceIndexes);

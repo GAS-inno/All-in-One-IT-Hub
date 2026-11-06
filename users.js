@@ -344,7 +344,17 @@ App.registerModule('users', (() => {
     const usersSearchInput = container.querySelector('#usersSearch');
     usersSearchInput.addEventListener('input', (event) => {
       userSearch = String(event.target.value || '');
+      const hadFocus = document.activeElement === usersSearchInput;
+      const caretPosition = usersSearchInput.selectionStart ?? userSearch.length;
+      const caretEnd = usersSearchInput.selectionEnd ?? caretPosition;
       render(container, countryFilter);
+      if (hadFocus) {
+        const updatedSearchBox = container.querySelector('#usersSearch');
+        if (updatedSearchBox) {
+          updatedSearchBox.focus();
+          updatedSearchBox.setSelectionRange(caretPosition, caretEnd);
+        }
+      }
     });
     container.querySelectorAll('.view-user-assets-btn').forEach((button) => {
       button.addEventListener('click', () => {
