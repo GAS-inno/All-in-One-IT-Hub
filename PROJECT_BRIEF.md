@@ -78,6 +78,7 @@ Data flow: module `render(container, country)` → reads from `App.store` cache 
 - [x] **2026-11-06:** Removed the per-row Edit action from inventory rows; updates now go through bulk **Edit selected** with checkbox row selection.
 - [x] **2026-11-06:** Users table search box now preserves focus and caret so multiple characters can be entered.
 - [x] **2026-11-06:** Users table now supports bulk Delete selected via row checkboxes / select-all; per-row Delete actions were removed. Deleting a user clears assigned device Primary user assignments.
+- [x] **2026-11-06:** Users table now supports bulk **Edit selected** via row checkboxes; the per-row Edit action was removed from inventory rows and updates now go through bulk **Edit selected**.
 - [x] **2026-11-06:** Users table supports filtering by assigned asset count (exact count) via the "Assigned assets (count)" input.
 - [x] **2026-11-06:** User add now validates duplicate email (or duplicate name) and merges into the existing user instead of blocking.
 - [ ] Open tasks: none for this requested change; wait for the user's next feature instruction.

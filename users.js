@@ -328,6 +328,7 @@ App.registerModule('users', (() => {
         <div class="section-actions">
           <button class="btn btn-secondary btn-sm" id="addUserBtn">+ Add user</button>
           <button class="btn btn-primary btn-sm" id="importUsersBtn">Import users CSV</button>
+          <button class="btn btn-secondary btn-sm" id="editUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Edit selected</button>
           <button class="btn btn-danger btn-sm" id="deleteUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Delete selected</button>
         </div>
       </div>
@@ -395,7 +396,10 @@ App.registerModule('users', (() => {
         if (checkbox.checked) selectedUserIndexes.add(index);
         else selectedUserIndexes.delete(index);
         const deleteSelectedBtn = container.querySelector('#deleteUsersBtn');
-        if (deleteSelectedBtn) deleteSelectedBtn.disabled = selectedUserIndexes.size === 0;
+        const editSelectedBtn = container.querySelector('#editUsersBtn');
+        const enabled = selectedUserIndexes.size > 0;
+        if (deleteSelectedBtn) deleteSelectedBtn.disabled = !enabled;
+        if (editSelectedBtn) editSelectedBtn.disabled = !enabled;
       });
     });
     document.getElementById('selectAllUsers').addEventListener('change', (event) => {
@@ -407,12 +411,54 @@ App.registerModule('users', (() => {
         if (rowCheckbox) rowCheckbox.checked = checked;
       });
       const deleteSelectedBtn = container.querySelector('#deleteUsersBtn');
-      if (deleteSelectedBtn) deleteSelectedBtn.disabled = selectedUserIndexes.size === 0;
+      const editSelectedBtn = container.querySelector('#editUsersBtn');
+      const enabled = selectedUserIndexes.size > 0;
+      if (deleteSelectedBtn) deleteSelectedBtn.disabled = !enabled;
+      if (editSelectedBtn) editSelectedBtn.disabled = !enabled;
     });
     container.querySelectorAll('.view-user-assets-btn').forEach((button) => {
       button.addEventListener('click', () => {
         selectedUserKey = filteredUsers[Number(button.dataset.userIndex)].key;
         render(container, countryFilter);
+      });
+    });
+    container.querySelector('#editUsersBtn').addEventListener('click', () => {
+      const toEdit = Array.from(selectedUserIndexes).map((index) => filteredUsers[index]).filter(Boolean);
+      if (!toEdit.length) return;
+      const first = toEdit[0];
+      Modal.open({
+        title: `Edit ${toEdit.length} user${toEdit.length === 1 ? '' : 's'}`,
+        confirmText: 'Save changes',
+        body: `<form id="userEditForm" class="device-form">
+          <label>Name <span class="required">*</span><input name="name" required value="${escapeHtml(first.name)}" /></label>
+          <label>Email<input name="email" type="email" value="${escapeHtml(first.email || '')}" /></label>
+          <label>Country<input name="country" value="${escapeHtml(first.country || '')}" /></label>
+          <label>Location<input name="location" value="${escapeHtml(first.location || '')}" /></label>
+        </form>`,
+        onConfirm: async () => {
+          const form = document.getElementById('userEditForm');
+          if (!form.reportValidity()) return;
+          const values = new FormData(form);
+          const updated = {
+            Name: String(values.get('name') || '').trim(),
+            Email: String(values.get('email') || '').trim(),
+            Country: String(values.get('country') || '').trim(),
+            Location: String(values.get('location') || '').trim()
+          };
+          const nextUsers = storedUsers().map((user) => {
+            const target = toEdit.find((item) => userKey(user.Email, user.Name) === item.key);
+            if (!target) return user;
+            return { ...user, ...updated, 'User ID': user['User ID'] };
+          });
+          try {
+            await App.store.set('users', nextUsers);
+            Modal.close();
+            render(container, countryFilter);
+            Toast.show(`Updated ${toEdit.length} user${toEdit.length === 1 ? '' : 's'}.`, 'success');
+          } catch (error) {
+            Toast.show(`Could not save user: ${error.message || error}`, 'error', 6000);
+          }
+        }
       });
     });
     container.querySelector('#deleteUsersBtn').addEventListener('click', () => {
