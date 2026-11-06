@@ -365,7 +365,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (item.dataset.module === 'inventory') App.modules.inventory?.selectDeviceType?.('');
         App.navigateTo(item.dataset.module);
       } else if (item.dataset.action === 'download-csv-template') {
-        App.modules.inventory?.downloadCsvTemplate?.();
+        App.modules.inventory?.openCsvTemplateModal?.();
       }
       // Close mobile sidebar
       document.getElementById('sidebar').classList.remove('open');

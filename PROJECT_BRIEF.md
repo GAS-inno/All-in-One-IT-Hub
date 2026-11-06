@@ -73,6 +73,7 @@ Data flow: module `render(container, country)` → reads from `App.store` cache 
 - [x] **2026-11-06:** Reworked checkout/check-in modal forms to use standard styled form controls for a clean, consistent dialog UI.
 - [x] **2026-11-06:** Checkout/check-in time now autofills with the system time and remains manually editable.
 - [x] **2026-11-06:** Added a new navigation panel item "Download CSV Template" that downloads downloadable CSV template samples (inventory/user templates).
+- [x] **2026-11-06:** Reworked the Download CSV Template flow to show template previews in a modal before downloading.
 - [ ] Open tasks: none for this requested change; wait for the user's next feature instruction.
 - ⛔ **Known blockers / constraints:** single-user local-only app (binds `127.0.0.1:8000`, no authentication or administrative audit log); requires internet for Chart.js and Google Fonts; operational data (CSV/SQLite) is gitignored; no multi-user sync.
 

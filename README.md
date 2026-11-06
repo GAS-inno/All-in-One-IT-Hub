@@ -79,7 +79,7 @@ Open **Dashboard** to view inventory metrics, filters, and charts. Use the avail
 
 The inventory supports Laptop, Firewall, UPS, AccessPoint, and Switch device types in the same SQLite database. Use the device-type links below **Inventory** to filter the list; a link is shown only while at least one device of that type exists. Use **Inventory** to see all types. Existing records without an asset type remain laptops. Use **+ Add device** to choose a type and enter common details such as serial number, manufacturer, model, and location, plus network or UPS fields where relevant. CSV imports can include an `Asset type` column, or a `Device type` column containing one of the supported categories; without one they are treated as the currently selected type, or Laptop when viewing all inventory.
 
-The sidebar **Download CSV Template** item downloads downloadable CSV template samples for the inventory/user datasets (including a laptop device sample row).
+The sidebar **Download CSV Template** item opens a template-samples modal with a preview of each template (laptop inventory and user list) before downloading it.
 
 **Fixed Asset Number** is optional. Enter the Finance/SAP book asset number when known. Hover over the column heading or field label for guidance; if the number is unavailable, check with the Finance asset manager. The value is retained in SQLite and included in inventory CSV imports and exports.
 

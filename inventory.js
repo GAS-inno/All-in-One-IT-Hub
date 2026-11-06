@@ -707,21 +707,49 @@ App.registerModule('inventory', (() => {
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
-  function downloadCsvTemplate() {
-    const inventoryHeaders = [
-      'Device ID', 'Device name', 'Serial number', 'Asset type', 'Ownership', 'Compliance', 'OS', 'OS version',
-      'Primary user display name', 'Primary user email address', 'Primary user UPN', 'Warranty Start Date', 'Warranty End Date',
-      'Manufacturer', 'Model', 'Location', 'Notes'
+  function openCsvTemplateModal() {
+    const templates = [
+      {
+        id: 'inventory',
+        label: 'Laptop inventory template',
+        filename: 'nexit-csv-template-inventory.csv',
+        headerRow: [
+          'Device ID', 'Device name', 'Serial number', 'Asset type', 'Ownership', 'Compliance', 'OS', 'OS version',
+          'Primary user display name', 'Primary user email address', 'Primary user UPN', 'Warranty Start Date', 'Warranty End Date',
+          'Manufacturer', 'Model', 'Location', 'Notes'
+        ],
+        sampleRow: [
+          'INT-1001', 'LAP-SG-001', 'SG-1001', 'laptop', 'Corporate', 'Compliant', 'Windows 11', '23H2',
+          '', 'alex.ng@contoso.com', 'alex.ng@contoso.com', '', '', 'Dell', 'Latitude 5440', '', ''
+        ]
+      },
+      {
+        id: 'users',
+        label: 'User list template',
+        filename: 'nexit-csv-template-users.csv',
+        headerRow: ['User ID', 'Name', 'Email', 'Country', 'Location'],
+        sampleRow: ['USR-1', 'Alex User', 'alex.ng@contoso.com', 'Singapore', '']
+      }
     ];
-    const inventorySample = [
-      'INT-1001', 'LAP-SG-001', 'SG-1001', 'laptop', 'Corporate', 'Compliant', 'Windows 11', '23H2',
-      '', 'alex.ng@contoso.com', 'alex.ng@contoso.com', '', '', 'Dell', 'Latitude 5440', '', ''
-    ];
-    const usersHeaders = ['User ID', 'Name', 'Email', 'Country', 'Location'];
-    const usersSample = ['USR-1', 'Alex User', 'alex.ng@contoso.com', 'Singapore', ''];
-    downloadCsvTemplateFile('nexit-csv-template-inventory.csv', inventoryHeaders, inventorySample);
-    downloadCsvTemplateFile('nexit-csv-template-users.csv', usersHeaders, usersSample);
-    Toast.show('CSV template samples downloaded.', 'success');
+    Modal.open({
+      title: 'CSV Template Samples',
+      confirmText: 'Download template',
+      body: `<div class="csv-templates">
+        ${templates.map((template, index) => `<label class="csv-template-option">
+          <input type="radio" name="csvTemplateChoice" value="${template.id}" ${index === 0 ? 'checked' : ''} />
+          <span class="csv-template-name">${escapeHtml(template.label)}</span>
+          <pre class="csv-template-preview">${escapeHtml(template.headerRow.join(','))}\n${escapeHtml(template.sampleRow.map((value) => value ?? '').join(','))}</pre>
+        </label>`).join('')}
+        <p class="form-help">Choose a template sample and download it before creating your own CSV.</p>
+      </div>`,
+      onConfirm: () => {
+        const selectedId = document.querySelector('input[name="csvTemplateChoice"]:checked')?.value;
+        const selected = templates.find((template) => template.id === selectedId) || templates[0];
+        downloadCsvTemplateFile(selected.filename, selected.headerRow, selected.sampleRow);
+        Modal.close();
+        Toast.show(`CSV template (${selected.label}) downloaded.`, 'success');
+      }
+    });
   }
 
   function getDeviceSearchText(device) {
@@ -1711,7 +1739,7 @@ App.registerModule('inventory', (() => {
   return {
     render,
     parseCsvText,
-    downloadCsvTemplate,
+    openCsvTemplateModal,
     currentCheckoutFor(device) {
       return getCurrentCheckout(device);
     },

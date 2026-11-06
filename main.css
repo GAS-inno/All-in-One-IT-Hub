@@ -451,6 +451,22 @@ input[type="date"].form-control::-webkit-calendar-picker-indicator { filter: inv
 
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .form-help { margin: 0; font-size: 12px; color: var(--text-muted); }
+.csv-templates { display: grid; gap: 12px; }
+.csv-template-option { display: flex; gap: 8px; align-items: flex-start; }
+.csv-template-option input[type="radio"] { margin-top: 4px; }
+.csv-template-name { font-weight: 600; color: var(--text-primary); font-size: 13px; }
+.csv-template-preview {
+  margin: 6px 0 0;
+  padding: 10px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow-x: auto;
+  white-space: pre;
+}
 
 /* ============================================
    MODAL
