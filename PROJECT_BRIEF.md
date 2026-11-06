@@ -70,6 +70,7 @@ Data flow: module `render(container, country)` → reads from `App.store` cache 
 - [x] **2026-11-06:** Added a search box to the Users management list, filtering staff by name or email.
 - [x] **2026-11-06:** Removed the per-row Delete button from inventory table rows to prevent accidental deletion.
 - [x] **2026-11-06:** Added checkout/check-in event time capture (`Event time`) via the action modal and history display.
+- [x] **2026-11-06:** Reworked checkout/check-in modal forms to use standard styled form controls for a clean, consistent dialog UI.
 - [ ] Open tasks: none for this requested change; wait for the user's next feature instruction.
 - ⛔ **Known blockers / constraints:** single-user local-only app (binds `127.0.0.1:8000`, no authentication or administrative audit log); requires internet for Chart.js and Google Fonts; operational data (CSV/SQLite) is gitignored; no multi-user sync.
 

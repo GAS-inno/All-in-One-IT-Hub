@@ -801,24 +801,54 @@ App.registerModule('inventory', (() => {
       confirmText: isCheckout ? 'Save checkout' : 'Save check-in',
       size: 'lg',
       body: `<form id="checkoutEventForm" class="device-form">
-        <p>${isCheckout ? 'Record who is taking custody of this asset.' : `Record the return of this asset from ${escapeHtml(currentCheckout['Staff name'])}.`}</p>
-        <div class="form-grid">
-          ${isCheckout
-            ? `<label class="form-grid-full">Checkout to user <span class="required">*</span>
-                <select name="staffUserId" required>
-                  <option value="">Select a user from the Users list</option>
-                  ${checkoutUsers.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.name)}${user.email ? ` · ${escapeHtml(user.email)}` : ''}${user.country || user.location ? ` — ${escapeHtml([user.country, user.location].filter(Boolean).join(' / '))}` : ''}</option>`).join('')}
-                </select>
-                ${checkoutUsers.length ? '' : '<small>Add a user manually or import a CSV from the Users page before checking out an asset.</small>'}
-              </label>`
-            : `<label>Staff name <span class="required">*</span><input name="staffName" required autocomplete="name" value="${escapeHtml(currentCheckout['Staff name'])}" placeholder="Person returning the asset" /></label>
-              <label>Staff email<input name="staffEmail" type="email" autocomplete="email" value="${escapeHtml(currentCheckout['Staff email'] || '')}" /></label>`}
-          <label>${isCheckout ? 'Checkout date' : 'Check-in date'} <span class="required">*</span><input name="eventDate" type="date" required value="${getTodayDate()}" /></label>
-          <label>${isCheckout ? 'Checkout time' : 'Check-in time'} <input name="eventTime" type="time" /></label>
-          ${isCheckout ? `<label>Expected return date<input name="expectedReturnDate" type="date" min="${getTodayDate()}" /></label>` : ''}
-          <label class="form-grid-full">Notes<textarea name="notes" rows="3" placeholder="Optional handover or return notes"></textarea></label>
-        </div>
+        <p class="form-help">${isCheckout ? 'Record who is taking custody of this asset.' : `Record the return of this asset from ${escapeHtml(currentCheckout['Staff name'])}.`}</p>
+        ${isCheckout
+          ? `<div class="form-group form-grid-full">
+               <label class="form-label" for="staffUserId">Checkout to <span class="required">*</span></label>
+               <select class="form-control" id="staffUserId" name="staffUserId" required>
+                 <option value="">Select a user from the Users list</option>
+                 ${checkoutUsers.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.name)}${user.email ? ` · ${escapeHtml(user.email)}` : ''}${user.country || user.location ? ` — ${escapeHtml([user.country, user.location].filter(Boolean).join(' / '))}` : ''}</option>`).join('')}
+               </select>
+               ${checkoutUsers.length ? '' : '<small class="form-help">Add a user manually or import a CSV from the Users page before checking out an asset.</small>'}
+             </div>
+             <div class="form-group">
+               <label class="form-label" for="eventDate">Checkout date <span class="required">*</span></label>
+               <input class="form-control" id="eventDate" name="eventDate" type="date" required value="${getTodayDate()}" />
+             </div>
+             <div class="form-group">
+               <label class="form-label" for="eventTime">Checkout time</label>
+               <input class="form-control" id="eventTime" name="eventTime" type="time" />
+             </div>
+             <div class="form-group">
+               <label class="form-label" for="expectedReturnDate">Expected return date</label>
+               <input class="form-control" id="expectedReturnDate" name="expectedReturnDate" type="date" min="${getTodayDate()}" />
+             </div>
+             <div class="form-group form-grid-full">
+               <label class="form-label" for="notes">Notes</label>
+               <textarea class="form-control" id="notes" name="notes" rows="3" placeholder="Optional handover or return notes"></textarea>
+             </div>`
+          : `<div class="form-group">
+               <label class="form-label" for="staffName">Staff name <span class="required">*</span></label>
+               <input class="form-control" id="staffName" name="staffName" required autocomplete="name" value="${escapeHtml(currentCheckout['Staff name'])}" placeholder="Person returning the asset" />
+             </div>
+             <div class="form-group">
+               <label class="form-label" for="staffEmail">Staff email</label>
+               <input class="form-control" id="staffEmail" name="staffEmail" type="email" autocomplete="email" value="${escapeHtml(currentCheckout['Staff email'] || '')}" />
+             </div>
+             <div class="form-group">
+               <label class="form-label" for="eventDate">Check-in date <span class="required">*</span></label>
+               <input class="form-control" id="eventDate" name="eventDate" type="date" required value="${getTodayDate()}" />
+             </div>
+             <div class="form-group">
+               <label class="form-label" for="eventTime">Check-in time</label>
+               <input class="form-control" id="eventTime" name="eventTime" type="time" />
+             </div>
+             <div class="form-group form-grid-full">
+               <label class="form-label" for="notes">Notes</label>
+               <textarea class="form-control" id="notes" name="notes" rows="3" placeholder="Optional handover or return notes"></textarea>
+             </div>`}
       </form>`,
+
       onConfirm: async () => {
         const form = document.getElementById('checkoutEventForm');
         if (!form.reportValidity()) return;
