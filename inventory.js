@@ -992,7 +992,6 @@ App.registerModule('inventory', (() => {
       const hasAssignedUser = Boolean(checkout || primaryUser);
       const assetKey = getAssetKey(device);
       const hasCheckoutHistory = assetKey && getCheckoutIndexes().assetKeys.has(assetKey);
-      const deleteButton = '';
       const cells = allColumns.map((col) => {
         const value = REPLACEMENT_COLUMNS.includes(col)
           ? replacement[col]
@@ -1050,7 +1049,7 @@ App.registerModule('inventory', (() => {
         return `<td>${escapeHtml(value || '—')}</td>`;
       }).join('');
       const rowClasses = [duplicate ? 'inventory-duplicate' : '', selected ? 'inventory-selected' : ''].filter(Boolean).join(' ');
-      return `<tr class="${rowClasses}"><td><input type="checkbox" class="device-select-checkbox" data-index="${index}" aria-label="Select ${escapeHtml(device['Device name'] || 'device')}" ${selected ? 'checked' : ''}></td>${cells}<td class="inventory-row-actions"><button class="btn btn-secondary btn-sm edit-device-btn" data-index="${index}" aria-label="Edit device">Edit</button>${deleteButton}<button class="btn btn-primary btn-sm checkout-device-btn" data-index="${index}" ${hasAssignedUser || !assetKey ? 'disabled' : ''}>Checkout</button><button class="btn btn-secondary btn-sm checkin-device-btn" data-index="${index}" ${hasAssignedUser ? '' : 'disabled'}${primaryUser && !checkout ? ` title="Check in to clear the Primary user assignment for this device"` : ''}>Check in</button><button class="btn btn-secondary btn-sm checkout-history-btn" data-index="${index}" ${hasCheckoutHistory ? '' : 'disabled'}>History</button></td></tr>`;
+      return `<tr class="${rowClasses}"><td><input type="checkbox" class="device-select-checkbox" data-index="${index}" aria-label="Select ${escapeHtml(device['Device name'] || 'device')}" ${selected ? 'checked' : ''}></td>${cells}<td class="inventory-row-actions"><button class="btn btn-primary btn-sm checkout-device-btn" data-index="${index}" ${hasAssignedUser || !assetKey ? 'disabled' : ''}>Checkout</button><button class="btn btn-secondary btn-sm checkin-device-btn" data-index="${index}" ${hasAssignedUser ? '' : 'disabled'}${primaryUser && !checkout ? ` title="Check in to clear the Primary user assignment for this device"` : ''}>Check in</button><button class="btn btn-secondary btn-sm checkout-history-btn" data-index="${index}" ${hasCheckoutHistory ? '' : 'disabled'}>History</button></td></tr>`;
     }).join('');
   }
 
@@ -1598,12 +1597,6 @@ App.registerModule('inventory', (() => {
     });
     container.querySelector('#databaseBackupInput').addEventListener('change', (event) => {
       confirmDatabaseRestore(event.target.files?.[0]);
-    });
-    container.querySelectorAll('.edit-device-btn').forEach((button) => {
-      button.addEventListener('click', () => openDeviceForm(container, country, Number(button.dataset.index)));
-    });
-    container.querySelectorAll('.delete-device-btn').forEach((button) => {
-      button.addEventListener('click', () => deleteDevice(container, country, Number(button.dataset.index)));
     });
     container.querySelectorAll('.checkout-device-btn').forEach((button) => {
       button.addEventListener('click', () => openCheckoutForm(container, country, Number(button.dataset.index), 'checkout'));

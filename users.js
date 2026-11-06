@@ -346,7 +346,7 @@ App.registerModule('users', (() => {
             <td>${escapeHtml(user.country || '—')}</td>
             <td>${escapeHtml(user.location || '—')}</td>
             <td>${user.assets.length}</td>
-            <td><button class="btn btn-secondary btn-sm view-user-assets-btn" data-user-index="${index}">View assets</button><button class="btn btn-danger btn-sm delete-user-btn" data-user-index="${index}">Delete</button></td>
+            <td><button class="btn btn-secondary btn-sm view-user-assets-btn" data-user-index="${index}">View assets</button></td>
           </tr>`).join('') : '<tr><td colspan="7" class="empty-state">No users match your search, asset count, or this country filter.</td></tr>'}</tbody>
         </table>
       </div>
@@ -449,43 +449,6 @@ App.registerModule('users', (() => {
             Toast.show(`Could not delete user: ${error.message || error}`, 'error', 6000);
           }
         }
-      });
-    });
-    container.querySelectorAll('.delete-user-btn').forEach((button) => {
-      button.addEventListener('click', () => {
-        const user = filteredUsers[Number(button.dataset.userIndex)];
-        if (!user) return;
-        Modal.open({
-          title: 'Delete user',
-          confirmText: 'Delete',
-          onOpen: () => { document.getElementById('modalConfirm').className = 'btn btn-danger'; },
-          body: `<p>Delete <strong>${escapeHtml(user.name)}</strong>${user.email ? ` (${escapeHtml(user.email)})` : ''} from the Users list?</p>`,
-          onConfirm: async () => {
-            try {
-              const remaining = storedUsers().filter((item) => userKey(item.Email, item.Name) !== user.key);
-              await App.store.set('users', remaining);
-              const inventory = App.store.get('inventory');
-              if (Array.isArray(inventory)) {
-                const clearedInventory = inventory.map((device) => {
-                  const email = String(device['Primary user email address'] || device['Primary user UPN'] || '').trim().toLowerCase();
-                  const name = String(device['Primary user display name'] || '').trim().toLowerCase();
-                  if (userKey(email, name) !== user.key) return device;
-                  const cleared = { ...device };
-                  cleared['Primary user display name'] = '';
-                  cleared['Primary user email address'] = '';
-                  cleared['Primary user UPN'] = '';
-                  return cleared;
-                });
-                await App.store.set('inventory', clearedInventory);
-              }
-              Modal.close();
-              render(container, countryFilter);
-              Toast.show('User deleted.', 'success');
-            } catch (error) {
-              Toast.show(`Could not delete user: ${error.message || error}`, 'error', 6000);
-            }
-          }
-        });
       });
     });
   }
