@@ -361,9 +361,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (item.dataset.deviceType) {
         App.modules.inventory?.selectDeviceType?.(item.dataset.deviceType);
         App.navigateTo('inventory');
-      } else {
+      } else if (item.dataset.module) {
         if (item.dataset.module === 'inventory') App.modules.inventory?.selectDeviceType?.('');
         App.navigateTo(item.dataset.module);
+      } else if (item.dataset.action === 'download-csv-template') {
+        App.modules.inventory?.downloadCsvTemplate?.();
       }
       // Close mobile sidebar
       document.getElementById('sidebar').classList.remove('open');

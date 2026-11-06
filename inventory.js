@@ -693,6 +693,37 @@ App.registerModule('inventory', (() => {
     Toast.show('Inventory export generated.', 'success');
   }
 
+  function downloadCsvTemplateFile(filename, headerRow, sampleRow) {
+    const csv = [
+      headerRow.map(escapeCsv).join(','),
+      sampleRow.map((column) => escapeCsv(column ?? '')).join(',')
+    ].join('\r\n');
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function downloadCsvTemplate() {
+    const inventoryHeaders = [
+      'Device ID', 'Device name', 'Serial number', 'Asset type', 'Ownership', 'Compliance', 'OS', 'OS version',
+      'Primary user display name', 'Primary user email address', 'Primary user UPN', 'Warranty Start Date', 'Warranty End Date',
+      'Manufacturer', 'Model', 'Location', 'Notes'
+    ];
+    const inventorySample = [
+      'INT-1001', 'LAP-SG-001', 'SG-1001', 'laptop', 'Corporate', 'Compliant', 'Windows 11', '23H2',
+      '', 'alex.ng@contoso.com', 'alex.ng@contoso.com', '', '', 'Dell', 'Latitude 5440', '', ''
+    ];
+    const usersHeaders = ['User ID', 'Name', 'Email', 'Country', 'Location'];
+    const usersSample = ['USR-1', 'Alex User', 'alex.ng@contoso.com', 'Singapore', ''];
+    downloadCsvTemplateFile('nexit-csv-template-inventory.csv', inventoryHeaders, inventorySample);
+    downloadCsvTemplateFile('nexit-csv-template-users.csv', usersHeaders, usersSample);
+    Toast.show('CSV template samples downloaded.', 'success');
+  }
+
   function getDeviceSearchText(device) {
     const parts = [];
     Object.keys(device || {}).forEach((key) => {
@@ -1680,6 +1711,7 @@ App.registerModule('inventory', (() => {
   return {
     render,
     parseCsvText,
+    downloadCsvTemplate,
     currentCheckoutFor(device) {
       return getCurrentCheckout(device);
     },
