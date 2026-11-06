@@ -900,10 +900,7 @@ App.registerModule('inventory', (() => {
       const hasAssignedUser = Boolean(checkout || primaryUser);
       const assetKey = getAssetKey(device);
       const hasCheckoutHistory = assetKey && getCheckoutIndexes().assetKeys.has(assetKey);
-      const deviceAssetType = getAssetType(device);
-      const deleteButton = deviceAssetType === 'laptop'
-        ? ''
-        : `<button class="btn btn-danger btn-sm delete-device-btn" data-index="${index}" aria-label="Delete device">Delete</button>`;
+      const deleteButton = '';
       const cells = allColumns.map((col) => {
         const value = REPLACEMENT_COLUMNS.includes(col)
           ? replacement[col]
