@@ -330,11 +330,13 @@ App.registerModule('users', (() => {
     selectedUserKey = '';
     selectedUserIndexes.clear();
     const assetCount = filteredUsers.reduce((total, user) => total + user.assets.length, 0);
+    const activeAccountCount = filteredUsers.filter((user) => user.accountActive === 'YES').length;
+    const inactiveAccountCount = filteredUsers.filter((user) => user.accountActive === 'NO').length;
     container.innerHTML = `
       <div class="section-header">
         <div>
           <div class="section-title">Users</div>
-          <div class="section-sub">${filteredUsers.length} user${filteredUsers.length === 1 ? '' : 's'} · ${assetCount} assigned serial number${assetCount === 1 ? '' : 's'}</div>
+          <div class="section-sub">${filteredUsers.length} user${filteredUsers.length === 1 ? '' : 's'} · ${activeAccountCount} active · ${inactiveAccountCount} inactive · ${assetCount} assigned serial number${assetCount === 1 ? '' : 's'}</div>
         </div>
         <div class="section-actions">
           <button class="btn btn-primary btn-sm" id="addUserBtn">+ Add user</button>
