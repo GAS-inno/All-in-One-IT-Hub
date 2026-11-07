@@ -1,6 +1,6 @@
 # Project Brief
 
-> Last updated: 2026-11-07
+> Last updated: 2026-11-08
 
 ## Purpose
 
@@ -19,6 +19,7 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 - `inventory_devices` is the current device record. Inventory imports merge by normalized serial number and preserve saved values for blank or null-like cells.
 - `warranty_records` stores warranty source data matched to inventory by serial.
 - `users` is the managed staff directory. User IDs are stable keys; names and emails are canonicalized from this table when replacement records are saved.
+- User records include an `Account Active` value (`YES` or `NO`). CSV imports and inventory-inferred users classify an email as `NO` when its local part starts with at least 24 hexadecimal characters; other email formats classify as `YES`. Users can set this value in the add and edit forms. This is a format heuristic, not a live directory lookup.
 - `checkout_history` stores ordered checkout/check-in events separately from device records. Normalized serial is the asset key; a non-placeholder Device ID is used only when serial is unavailable.
 - `replacement_history` stores replacement events separately from current inventory. Inventory replacement fields are derived from those events.
 - `asset_status_labels` stores the configured device status and its characteristic (`Deployable`, `Undeployable`, `Pending`, or `Archived`). The displayed status is derived from the configured label and current assignment. Assigned deployable devices display as `Deployed`.

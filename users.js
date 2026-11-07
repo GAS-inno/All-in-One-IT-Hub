@@ -23,6 +23,12 @@ App.registerModule('users', (() => {
     return normalize(email) || normalize(name);
   }
 
+  function accountActiveForEmail(email) {
+    const localPart = String(email || '').trim().split('@')[0] || '';
+    // Some directory exports prepend a long hexadecimal object ID to the real username.
+    return /^[a-f0-9]{24,}/i.test(localPart) ? 'NO' : 'YES';
+  }
+
   function makeUserId() {
     return globalThis.crypto?.randomUUID?.() || `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
@@ -116,6 +122,7 @@ App.registerModule('users', (() => {
         id: String(record['User ID'] || ''),
         name: String(record.Name || '').trim(),
         email: String(record.Email || '').trim(),
+        accountActive: String(record['Account Active'] || accountActiveForEmail(record.Email)).trim().toUpperCase(),
         country: String(record.Country || ''),
         location: String(record.Location || ''),
         assets: [],
@@ -136,6 +143,7 @@ App.registerModule('users', (() => {
       if (!user) {
         user = {
           key, id: '', name: identity.name, email: identity.email,
+          accountActive: accountActiveForEmail(identity.email),
           country: identity.country, location: identity.location,
           assets: [], serials: new Set()
         };
@@ -180,6 +188,7 @@ App.registerModule('users', (() => {
       body: `<form id="userForm" class="device-form">
         <label>Name <span class="required">*</span><input name="name" required autocomplete="name" /></label>
         <label>Email<input name="email" type="email" autocomplete="email" /></label>
+        <label>Account Active<select name="accountActive"><option value="YES" selected>YES</option><option value="NO">NO</option></select></label>
         <label>Country<input name="country" placeholder="e.g. Singapore or SG" /></label>
         <label>Location<input name="location" placeholder="Office, site, or department" /></label>
       </form>`,
@@ -191,6 +200,7 @@ App.registerModule('users', (() => {
           'User ID': makeUserId(),
           Name: String(values.get('name') || '').trim(),
           Email: String(values.get('email') || '').trim(),
+          'Account Active': String(values.get('accountActive') || 'YES').trim().toUpperCase(),
           Country: String(values.get('country') || '').trim(),
           Location: String(values.get('location') || '').trim()
         };
@@ -248,6 +258,7 @@ App.registerModule('users', (() => {
         'User ID': makeUserId(),
         Name: name,
         Email: email,
+        'Account Active': accountActiveForEmail(email),
         Country: value(indexes.country),
         Location: value(indexes.location)
       };
@@ -341,16 +352,17 @@ App.registerModule('users', (() => {
       <input id="usersFileInput" type="file" accept=".csv,text/csv" hidden />
       <div class="card inventory-table-wrap">
         <table class="inventory-table">
-          <thead><tr><th><input type="checkbox" id="selectAllUsers" aria-label="Select all users" /></th><th>User</th><th>Email</th><th>Country</th><th>Location</th><th>Assigned assets</th><th>Actions</th></tr></thead>
+          <thead><tr><th><input type="checkbox" id="selectAllUsers" aria-label="Select all users" /></th><th>User</th><th>Email</th><th>Account Active</th><th>Country</th><th>Location</th><th>Assigned assets</th><th>Actions</th></tr></thead>
           <tbody>${filteredUsers.length ? filteredUsers.map((user, index) => `<tr>
             <td><input type="checkbox" class="user-select-checkbox" data-user-index="${index}" aria-label="Select user" /></td>
             <td>${escapeHtml(user.name)}</td>
             <td>${escapeHtml(user.email || '—')}</td>
+            <td>${escapeHtml(user.accountActive || 'YES')}</td>
             <td>${escapeHtml(user.country || '—')}</td>
             <td>${escapeHtml(user.location || '—')}</td>
             <td>${user.assets.length}</td>
             <td><button class="btn btn-secondary btn-sm view-user-assets-btn" data-user-index="${index}">View assets</button></td>
-          </tr>`).join('') : '<tr><td colspan="7" class="empty-state">No users match your search, asset count, or this country filter.</td></tr>'}</tbody>
+          </tr>`).join('') : '<tr><td colspan="8" class="empty-state">No users match your search, asset count, or this country filter.</td></tr>'}</tbody>
         </table>
       </div>
     `;
@@ -434,6 +446,7 @@ App.registerModule('users', (() => {
         body: `<form id="userEditForm" class="device-form">
           <label>Name <span class="required">*</span><input name="name" required value="${escapeHtml(first.name)}" /></label>
           <label>Email<input name="email" type="email" value="${escapeHtml(first.email || '')}" /></label>
+          <label>Account Active<select name="accountActive"><option value="YES" ${first.accountActive === 'YES' ? 'selected' : ''}>YES</option><option value="NO" ${first.accountActive === 'NO' ? 'selected' : ''}>NO</option></select></label>
           <label>Country<input name="country" value="${escapeHtml(first.country || '')}" /></label>
           <label>Location<input name="location" value="${escapeHtml(first.location || '')}" /></label>
         </form>`,
@@ -444,6 +457,7 @@ App.registerModule('users', (() => {
           const updated = {
             Name: String(values.get('name') || '').trim(),
             Email: String(values.get('email') || '').trim(),
+            'Account Active': String(values.get('accountActive') || 'YES').trim().toUpperCase(),
             Country: String(values.get('country') || '').trim(),
             Location: String(values.get('location') || '').trim()
           };
