@@ -326,10 +326,12 @@ App.registerModule('users', (() => {
           <div class="section-sub">${filteredUsers.length} user${filteredUsers.length === 1 ? '' : 's'} · ${assetCount} assigned serial number${assetCount === 1 ? '' : 's'}</div>
         </div>
         <div class="section-actions">
-          <button class="btn btn-secondary btn-sm" id="addUserBtn">+ Add user</button>
-          <button class="btn btn-primary btn-sm" id="importUsersBtn">Import users CSV</button>
-          <button class="btn btn-secondary btn-sm" id="editUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Edit selected</button>
-          <button class="btn btn-danger btn-sm" id="deleteUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Delete selected</button>
+          <button class="btn btn-primary btn-sm" id="addUserBtn">+ Add user</button>
+          <button class="btn btn-secondary btn-sm" id="importUsersBtn">Import users CSV</button>
+          <div class="user-selection-actions" aria-label="Selected user actions">
+            <button class="btn btn-secondary btn-sm" id="editUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Edit selected</button>
+            <button class="btn btn-danger btn-sm" id="deleteUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Delete selected</button>
+          </div>
         </div>
       </div>
       <div class="filter-bar">
@@ -445,12 +447,60 @@ App.registerModule('users', (() => {
             Country: String(values.get('country') || '').trim(),
             Location: String(values.get('location') || '').trim()
           };
-          const nextUsers = storedUsers().map((user) => {
-            const target = toEdit.find((item) => userKey(user.Email, user.Name) === item.key);
-            if (!target) return user;
-            return { ...user, ...updated, 'User ID': user['User ID'] };
+          const editTargets = toEdit.map((item) => ({
+            id: item.id,
+            oldEmail: normalize(item.email),
+            oldName: normalize(item.name)
+          }));
+          const isTargetUser = (user) => editTargets.some((target) => (
+            (target.id && String(user['User ID'] || '') === target.id)
+            || (target.oldEmail && normalize(user.Email) === target.oldEmail)
+            || (!target.oldEmail && target.oldName && normalize(user.Name) === target.oldName)
+          ));
+          const nextUsers = storedUsers().map((user) => isTargetUser(user)
+            ? { ...user, ...updated, 'User ID': user['User ID'] }
+            : user);
+          const inventory = App.store.get('inventory') || [];
+          const nextInventory = inventory.map((device) => {
+            const email = normalize(device['Primary user email address'] || device['Primary user UPN']);
+            const name = normalize(device['Primary user display name']);
+            const target = editTargets.find((item) => (
+              (item.oldEmail && email === item.oldEmail)
+              || (!item.oldEmail && item.oldName && name === item.oldName)
+            ));
+            if (!target) return device;
+            return {
+              ...device,
+              'Primary user display name': updated.Name,
+              'Primary user email address': updated.Email,
+              'Primary user UPN': updated.Email,
+              Country: updated.Country,
+              Location: updated.Location
+            };
+          });
+          const checkoutHistory = App.store.get('checkoutHistory') || [];
+          const nextCheckoutHistory = checkoutHistory.map((event) => {
+            const email = normalize(event['Staff email']);
+            const name = normalize(event['Staff name']);
+            const target = editTargets.find((item) => (
+              (item.oldEmail && email === item.oldEmail)
+              || (!item.oldEmail && item.oldName && name === item.oldName)
+            ));
+            return target ? {
+              ...event,
+              'Staff name': updated.Name,
+              'Staff email': updated.Email,
+              'Staff country': updated.Country,
+              'Staff location': updated.Location
+            } : event;
           });
           try {
+            if (JSON.stringify(nextInventory) !== JSON.stringify(inventory)) {
+              await App.store.set('inventory', nextInventory);
+            }
+            if (JSON.stringify(nextCheckoutHistory) !== JSON.stringify(checkoutHistory)) {
+              await App.store.set('checkoutHistory', nextCheckoutHistory);
+            }
             await App.store.set('users', nextUsers);
             Modal.close();
             render(container, countryFilter);

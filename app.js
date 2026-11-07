@@ -16,10 +16,11 @@
 const App = {
   currentModule: 'dashboard',
   countryFilter: 'all',
+  fieldOptions: {},
 
   // Inventory, warranty, replacement, and checkout histories are persisted by the local SQLite API.
   store: {
-    databaseKeys: new Set(['inventory', 'warranty', 'replacementHistory', 'checkoutHistory', 'users']),
+    databaseKeys: new Set(['inventory', 'warranty', 'replacementHistory', 'checkoutHistory', 'users', 'statusLabels']),
     cache: new Map(),
     writeQueues: new Map(),
     initialized: false,
@@ -46,7 +47,8 @@ const App = {
         warranty: '/api/warranty',
         replacementHistory: '/api/replacement-history',
         checkoutHistory: '/api/checkout-history',
-        users: '/api/users'
+        users: '/api/users',
+        statusLabels: '/api/status-labels'
       }[key];
       const previousWrite = this.writeQueues.get(key) || Promise.resolve();
       const write = previousWrite.catch(() => {}).then(async () => {
@@ -101,7 +103,7 @@ const App = {
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       if (!Array.isArray(result.inventory) || !Array.isArray(result.warranty)
         || !Array.isArray(result.replacementHistory) || !Array.isArray(result.checkoutHistory)
-        || !Array.isArray(result.users)) {
+        || !Array.isArray(result.users) || !Array.isArray(result.statusLabels)) {
         throw new Error('SQLite server is out of date. Stop it, restart python3 server.py (or py server.py), then reload this page.');
       }
       this.cache.set('inventory', result.inventory);
@@ -109,6 +111,8 @@ const App = {
       this.cache.set('replacementHistory', result.replacementHistory);
       this.cache.set('checkoutHistory', result.checkoutHistory);
       this.cache.set('users', result.users);
+      this.cache.set('statusLabels', result.statusLabels);
+      this.fieldOptions = result.fieldOptions || {};
       this.initialized = true;
       if (result.migrated) Toast.show('Existing browser inventory was copied into the local SQLite database.', 'success', 6000);
     }
@@ -149,7 +153,7 @@ const App = {
 
     // Render module
     const container = document.getElementById('moduleContainer');
-    document.getElementById('inventorySettingsHost').replaceChildren();
+    document.getElementById('inventorySettingsHost')?.replaceChildren();
     container.innerHTML = '';
     container.style.animation = 'none';
     container.offsetHeight; // reflow
@@ -402,10 +406,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('modalConfirm').addEventListener('click', () => {
     if (Modal._onConfirm) Modal._onConfirm();
   });
-  document.getElementById('modalBackdrop').addEventListener('click', e => {
-    if (e.target === document.getElementById('modalBackdrop')) Modal.close();
-  });
-
+  // Backdrop clicks intentionally do not dismiss open forms; use the explicit controls above.
   // Load inventory from SQLite before rendering any module.
   App.store.initialize().then(() => {
     App.modules.inventory?.refreshDeviceTypeNavigation?.();

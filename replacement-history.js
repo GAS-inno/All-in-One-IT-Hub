@@ -9,19 +9,16 @@ App.registerModule('replacements', (() => {
     'Replacement Date',
     'Replacement Reason',
     'Old Device Condition',
-    'Handover Eligibility',
     'Lifecycle Status',
     'Remarks'
   ];
   const REASONS = ['Out of Warranty (OOW)', 'Hardware Failure', 'Damaged Device', 'Performance Issue', 'Upgrade or Refresh', 'Other'];
   const CONDITIONS = ['Working', 'Faulty', 'Damaged', 'Not Assessed'];
-  const ELIGIBILITY = ['Deployable', 'Un-deployable', 'Pending Assessment', 'Recycle'];
   const LIFECYCLE = ['In Use', 'Available for Handover', 'Pending Assessment', 'Recycle', 'Disposed'];
   let records = [];
   let loaded = false;
   let search = '';
   let reasonFilter = '';
-  let eligibilityFilter = '';
   let lifecycleFilter = '';
   let dateFrom = '';
   let dateTo = '';
@@ -31,14 +28,8 @@ App.registerModule('replacements', (() => {
   function initializeRecords() {
     if (loaded || !App.store.initialized) return;
     const storedRecords = App.store.get('replacementHistory');
-    records = storedRecords.map((record) => ({
-      ...record,
-      'Handover Eligibility': normalizeEligibility(record['Handover Eligibility'])
-    }));
+    records = storedRecords;
     loaded = true;
-    if (records.some((record, index) => record['Handover Eligibility'] !== storedRecords[index]['Handover Eligibility'])) {
-      void persistRecords(records);
-    }
   }
 
   async function persistRecords(nextRecords) {
@@ -60,14 +51,6 @@ App.registerModule('replacements', (() => {
 
   function serialKey(value) {
     return String(value || '').trim().toUpperCase();
-  }
-
-  function normalizeEligibility(value) {
-    const text = String(value || '').trim();
-    const key = text.toLowerCase();
-    if (key === 'eligible for handover' || key === 'deployable') return 'Deployable';
-    if (key === 'not eligible for handover' || key === 'un-deployable' || key === 'undeployable') return 'Un-deployable';
-    return ELIGIBILITY.find((option) => option.toLowerCase() === key) || text;
   }
 
   function localToday() {
@@ -141,7 +124,7 @@ App.registerModule('replacements', (() => {
     return String(value || '').replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
   }
 
-  function validateRecord(record) {
+  function validateRecord(record, { requireStaffEmail = false, allowMissingOldDevice = false } = {}) {
     const normalized = {
       ...record,
       'Replacement ID': String(record['Replacement ID'] || '').trim(),
@@ -152,22 +135,21 @@ App.registerModule('replacements', (() => {
       'Replacement Date': String(record['Replacement Date'] || '').trim(),
       'Replacement Reason': String(record['Replacement Reason'] || '').trim(),
       'Old Device Condition': String(record['Old Device Condition'] || '').trim(),
-      'Handover Eligibility': normalizeEligibility(record['Handover Eligibility']),
       'Lifecycle Status': String(record['Lifecycle Status'] || '').trim(),
       Remarks: String(record.Remarks || '').trim()
     };
     const errors = [];
     if (!normalized['Replacement ID']) errors.push('Replacement ID is required.');
     if (!normalized['Staff Member Name']) errors.push('Staff Member Name is required.');
-    if (!normalized['Old Device Serial Number']) errors.push('Old Device Serial Number is required.');
+    if (requireStaffEmail && !normalized['Staff Email']) errors.push('Staff Email is required.');
+    if (!allowMissingOldDevice && !normalized['Old Device Serial Number']) errors.push('Old Device Serial Number is required.');
     if (!normalized['New Device Serial Number']) errors.push('New Device Serial Number is required.');
-    if (serialKey(normalized['Old Device Serial Number']) === serialKey(normalized['New Device Serial Number'])) {
+    if (normalized['Old Device Serial Number'] && serialKey(normalized['Old Device Serial Number']) === serialKey(normalized['New Device Serial Number'])) {
       errors.push('Old and new device serial numbers must be different.');
     }
     if (!validDate(normalized['Replacement Date'])) errors.push('Replacement Date must be a valid YYYY-MM-DD date.');
     if (!REASONS.includes(normalized['Replacement Reason'])) errors.push('Select a valid Replacement Reason.');
     if (!CONDITIONS.includes(normalized['Old Device Condition'])) errors.push('Select a valid Old Device Condition.');
-    if (!ELIGIBILITY.includes(normalized['Handover Eligibility'])) errors.push('Select a valid Handover Eligibility.');
     if (!LIFECYCLE.includes(normalized['Lifecycle Status'])) errors.push('Select a valid Lifecycle Status.');
     return { record: normalized, errors };
   }
@@ -247,7 +229,6 @@ App.registerModule('replacements', (() => {
         'Replacement Date': '',
         'Replaced By Device Serial Number': '',
         'Replacement Count': '',
-        'Handover Eligibility': '',
         'Lifecycle Status': ''
       };
     }
@@ -260,28 +241,21 @@ App.registerModule('replacements', (() => {
       'Replacement Date': matches.map((record) => record['Replacement Date']).join(', '),
       'Replaced By Device Serial Number': matches.map((record) => record['New Device Serial Number']).join(' → '),
       'Replacement Count': matches.length,
-      'Handover Eligibility': normalizeEligibility(latest?.['Handover Eligibility']),
       'Lifecycle Status': latest?.['Lifecycle Status'] || ''
     };
   }
 
   function renderStats() {
     const current = latestPerOldDevice();
-    let eligible = 0;
-    let notEligible = 0;
     let recycle = 0;
     let pending = 0;
     current.forEach((record) => {
-      if (record['Handover Eligibility'] === 'Deployable') eligible += 1;
-      if (record['Handover Eligibility'] === 'Un-deployable') notEligible += 1;
       if (record['Lifecycle Status'] === 'Recycle') recycle += 1;
-      if (record['Handover Eligibility'] === 'Pending Assessment' || record['Lifecycle Status'] === 'Pending Assessment') pending += 1;
+      if (record['Lifecycle Status'] === 'Pending Assessment') pending += 1;
     });
     const values = [
       ['Total replacement records', records.length],
       ['Unique old devices replaced', current.size],
-      ['Deployable', eligible],
-      ['Un-deployable', notEligible],
       ['Marked for recycling', recycle],
       ['Pending assessment', pending]
     ];
@@ -291,7 +265,7 @@ App.registerModule('replacements', (() => {
   }
 
   function statusBadge(value) {
-    const normalized = normalizeEligibility(value);
+    const normalized = String(value || '').trim();
     const color = normalized === 'Recycle' || normalized === 'Un-deployable' || normalized === 'Disposed' ? 'badge-red'
       : value === 'Pending Assessment' ? 'badge-orange'
         : normalized === 'Deployable' || value === 'Available for Handover' || value === 'In Use' ? 'badge-green' : 'badge-gray';
@@ -307,7 +281,6 @@ App.registerModule('replacements', (() => {
       ].some((value) => String(value || '').toLowerCase().includes(query));
       return matchesQuery
         && (!reasonFilter || record['Replacement Reason'] === reasonFilter)
-        && (!eligibilityFilter || record['Handover Eligibility'] === eligibilityFilter)
         && (!lifecycleFilter || record['Lifecycle Status'] === lifecycleFilter)
         && (!dateFrom || record['Replacement Date'] >= dateFrom)
         && (!dateTo || record['Replacement Date'] <= dateTo);
@@ -322,8 +295,8 @@ App.registerModule('replacements', (() => {
   }
 
   function renderRows(rows) {
-    if (!loaded) return '<tr><td colspan="14" class="empty-state">No replacement history loaded. Add a record or import a replacement history CSV.</td></tr>';
-    if (!rows.length) return '<tr><td colspan="14" class="empty-state">No replacement records match these filters.</td></tr>';
+    if (!loaded) return '<tr><td colspan="8" class="empty-state">No replacement history loaded. Add a record or import a replacement history CSV.</td></tr>';
+    if (!rows.length) return '<tr><td colspan="8" class="empty-state">No replacement records match these filters.</td></tr>';
     return rows.map((record) => {
       const oldName = inventoryDeviceName(record['Old Device Serial Number']);
       const newName = inventoryDeviceName(record['New Device Serial Number']);
@@ -331,17 +304,11 @@ App.registerModule('replacements', (() => {
       return `<tr>
         <td>${id}</td>
         <td>${escapeHtml(record['Staff Member Name'])}</td>
-        <td>${escapeHtml(record['Staff Email'] || '—')}</td>
-        <td>${escapeHtml(record['Old Device Serial Number'])}</td>
-        <td>${oldName ? escapeHtml(oldName) : '<span class="replacement-missing">Not found in current inventory</span>'}</td>
-        <td>${escapeHtml(record['New Device Serial Number'])}</td>
-        <td>${newName ? escapeHtml(newName) : '<span class="replacement-missing">Not found in current inventory</span>'}</td>
+        <td><span class="replacement-device-name">${oldName ? escapeHtml(oldName) : '<span class="replacement-missing">Not found in current inventory</span>'}</span><small class="replacement-device-serial">${escapeHtml(record['Old Device Serial Number'])}</small></td>
+        <td><span class="replacement-device-name">${newName ? escapeHtml(newName) : '<span class="replacement-missing">Not found in current inventory</span>'}</span><small class="replacement-device-serial">${escapeHtml(record['New Device Serial Number'])}</small></td>
         <td>${escapeHtml(record['Replacement Date'])}</td>
         <td>${escapeHtml(record['Replacement Reason'])}</td>
-        <td>${escapeHtml(record['Old Device Condition'])}</td>
-        <td>${statusBadge(record['Handover Eligibility'])}</td>
         <td>${statusBadge(record['Lifecycle Status'])}</td>
-        <td class="replacement-remarks">${escapeHtml(record.Remarks || '—')}</td>
         <td class="replacement-actions">
           <button class="btn btn-secondary btn-sm view-replacement-btn" data-id="${id}">View</button>
           <button class="btn btn-secondary btn-sm edit-replacement-btn" data-id="${id}">Edit</button>
@@ -353,6 +320,35 @@ App.registerModule('replacements', (() => {
 
   function selectOptions(values, selected, placeholder) {
     return `<option value="">${escapeHtml(placeholder)}</option>${values.map((value) => `<option value="${escapeHtml(value)}" ${selected === value ? 'selected' : ''}>${escapeHtml(value)}</option>`).join('')}`;
+  }
+
+  function highlightMatch(value, query) {
+    const text = String(value || '');
+    const index = text.toLowerCase().indexOf(String(query || '').toLowerCase());
+    if (index < 0 || !query) return escapeHtml(text);
+    return `${escapeHtml(text.slice(0, index))}<mark>${escapeHtml(text.slice(index, index + query.length))}</mark>${escapeHtml(text.slice(index + query.length))}`;
+  }
+
+  async function fetchSearchResults(url, label) {
+    const response = await fetch(url, { headers: { Accept: 'application/json' } });
+    const raw = await response.text();
+    const contentType = response.headers.get('content-type') || '';
+    const isJson = contentType.toLowerCase().includes('application/json');
+    const failed = !response.ok;
+    if (!isJson) {
+      const requestUrl = new URL(url, window.location.href).href;
+      console.error(`${label} returned non-JSON response`, { requestUrl, status: response.status, contentType, body: raw });
+      throw new Error(`${label}: HTTP ${response.status} from ${requestUrl}; expected JSON but received ${contentType || 'no content-type'}. The server at this origin does not expose the autocomplete route. Stop the existing server and start server.py from the NexIT project folder. Response: ${raw.slice(0, 200)}`);
+    }
+    let payload;
+    try {
+      payload = raw ? JSON.parse(raw) : {};
+    } catch (error) {
+      console.error(`${label} returned non-JSON response`, { status: response.status, contentType, body: raw });
+      throw new Error(`${label}: HTTP ${response.status}, ${contentType || 'no content-type'}; response: ${raw.slice(0, 200)}`);
+    }
+    if (failed) throw new Error(payload.error || `${label}: HTTP ${response.status}.`);
+    return payload;
   }
 
   function deviceOptions(listId) {
@@ -386,29 +382,39 @@ App.registerModule('replacements', (() => {
       'Replacement Date': localToday(),
       'Replacement Reason': '',
       'Old Device Condition': '',
-      'Handover Eligibility': '',
       'Lifecycle Status': '',
       Remarks: ''
     };
+    let selectedStaffUserId = '';
+    let selectedNewSerial = existing ? record['New Device Serial Number'] : '';
+    let selectedOldDevice = null;
+    let oldDeviceNeedsChoice = false;
+    let staffDeviceCount = null;
     Modal.open({
       title: existing ? 'Edit replacement record' : 'Add replacement record',
       confirmText: existing ? 'Save changes' : 'Add record',
       size: 'lg',
       body: `<form id="replacementForm" class="replacement-form">
         <div class="replacement-form-grid">
-          <label class="device-form-field">Staff Member Name *
-            <input class="form-control" name="Staff Member Name" required value="${escapeHtml(record['Staff Member Name'])}">
+          <label class="device-form-field replacement-autocomplete-field">Staff Member Name *
+            <input class="form-control" name="Staff Member Name" id="replacementStaffName" required autocomplete="off" aria-autocomplete="list" aria-expanded="false" value="${escapeHtml(record['Staff Member Name'])}">
+            <span class="replacement-field-message" id="replacementStaffNameMessage" aria-live="polite"></span>
+            <div class="replacement-suggestions" id="replacementStaffNameSuggestions" role="listbox"></div>
           </label>
-          <label class="device-form-field">Staff Email
-            <input class="form-control" type="email" name="Staff Email" value="${escapeHtml(record['Staff Email'])}">
+          <label class="device-form-field replacement-autocomplete-field">Staff Email *
+            <input class="form-control" type="email" name="Staff Email" id="replacementStaffEmail" required autocomplete="off" aria-autocomplete="list" aria-expanded="false" value="${escapeHtml(record['Staff Email'])}">
+            <span class="replacement-field-message" id="replacementStaffEmailMessage" aria-live="polite"></span>
+            <div class="replacement-suggestions" id="replacementStaffEmailSuggestions" role="listbox"></div>
           </label>
-          <label class="device-form-field">Old Device (name — serial number) *
-            <input class="form-control" id="oldSerialInput" name="Old Device Serial Number" list="oldDeviceOptions" autocomplete="off" required value="${escapeHtml(record['Old Device Serial Number'])}" placeholder="Choose a device or enter a serial number">
-            ${deviceOptions('oldDeviceOptions')}
+          <label class="device-form-field replacement-autocomplete-field">Old Device (name — serial number)
+            <input class="form-control" id="oldSerialInput" name="Old Device Serial Number" autocomplete="off" aria-autocomplete="list" aria-expanded="false" value="${escapeHtml(record['Old Device Serial Number'])}" placeholder="Search assigned inventory; optional for a new assignment">
+            <span class="replacement-field-message" id="oldDeviceMessage" aria-live="polite"></span>
+            <div class="replacement-suggestions" id="oldDeviceSuggestions" role="listbox"></div>
           </label>
-          <label class="device-form-field">New Device (name — serial number) *
-            <input class="form-control" id="newSerialInput" name="New Device Serial Number" list="newDeviceOptions" autocomplete="off" required value="${escapeHtml(record['New Device Serial Number'])}" placeholder="Choose a device or enter a serial number">
-            ${deviceOptions('newDeviceOptions')}
+          <label class="device-form-field replacement-autocomplete-field">Replacement Device (serial · model · country · fixed asset) *
+            <input class="form-control" id="newSerialInput" name="New Device Serial Number" autocomplete="off" aria-autocomplete="list" aria-expanded="false" required value="${escapeHtml(record['New Device Serial Number'])}" placeholder="Search available inventory">
+            <span class="replacement-field-message" id="replacementDeviceMessage" aria-live="polite"></span>
+            <div class="replacement-suggestions" id="replacementDeviceSuggestions" role="listbox"></div>
           </label>
           <label class="device-form-field">Replacement Date *
             <input class="form-control" type="date" name="Replacement Date" required value="${escapeHtml(record['Replacement Date'])}">
@@ -419,9 +425,6 @@ App.registerModule('replacements', (() => {
           <label class="device-form-field">Old Device Condition *
             <select class="form-control" name="Old Device Condition" required>${selectOptions(CONDITIONS, record['Old Device Condition'], 'Select condition')}</select>
           </label>
-          <label class="device-form-field">Deployment status *
-            <select class="form-control" name="Handover Eligibility" required>${selectOptions(ELIGIBILITY, normalizeEligibility(record['Handover Eligibility']), 'Select deployment status')}</select>
-          </label>
           <label class="device-form-field">Lifecycle Status *
             <select class="form-control" name="Lifecycle Status" required>${selectOptions(LIFECYCLE, record['Lifecycle Status'], 'Select status')}</select>
           </label>
@@ -430,7 +433,7 @@ App.registerModule('replacements', (() => {
           </label>
         </div>
         <p id="replacementSerialWarning" class="replacement-warning" aria-live="polite"></p>
-        <p class="replacement-form-note">Serial numbers not found in the current inventory can still be recorded.</p>
+        <p class="replacement-form-note">Staff must be selected from Users. Replacement devices must be available for handout; the selected device is assigned to this staff member when saved.</p>
       </form>`,
       onOpen: () => {
         const form = document.getElementById('replacementForm');
@@ -439,34 +442,256 @@ App.registerModule('replacements', (() => {
         const staffName = form.elements.namedItem('Staff Member Name');
         const staffEmail = form.elements.namedItem('Staff Email');
         const warning = document.getElementById('replacementSerialWarning');
-        const prefillStaff = () => {
-          const device = inventoryDevice(oldSerial.value);
-          if (!device) return;
-          if (!staffName.value.trim()) staffName.value = device['Primary user display name'] || '';
-          if (!staffEmail.value.trim()) staffEmail.value = device['Primary user email address'] || device['Primary user UPN'] || '';
+        const userFields = [
+          { input: staffName, field: 'name', suggestions: document.getElementById('replacementStaffNameSuggestions'), message: document.getElementById('replacementStaffNameMessage') },
+          { input: staffEmail, field: 'email', suggestions: document.getElementById('replacementStaffEmailSuggestions'), message: document.getElementById('replacementStaffEmailMessage') }
+        ];
+        const manualOverrides = new Set();
+        let selectedStaff = null;
+        let userTimer = null;
+        let deviceTimer = null;
+        let oldDeviceTimer = null;
+        let currentDevicesRequest = 0;
+        const showOldDevices = (devices, query = '') => {
+          const suggestions = document.getElementById('oldDeviceSuggestions');
+          const message = document.getElementById('oldDeviceMessage');
+          oldDeviceNeedsChoice = devices.length > 1;
+          if (!devices.length) {
+            if (!manualOverrides.has('old')) { oldSerial.value = ''; selectedOldDevice = null; }
+            message.textContent = 'No active assigned device found. You can continue without an old device.';
+            return;
+          }
+          suggestions.innerHTML = devices.map((device, index) => `<button type="button" class="replacement-suggestion" role="option" data-old-device="${index}"><strong>${highlightMatch(device.deviceName || device.serial, query)} · ${highlightMatch(device.serial, query)}</strong><small>${escapeHtml([device.model, device.country, device.fixedAssetNumber, device.staff?.name].filter(Boolean).join(' · '))}</small></button>`).join('');
+          suggestions.querySelectorAll('[data-old-device]').forEach((button) => button.addEventListener('click', () => pickOldDevice(devices[Number(button.dataset.oldDevice)])));
+          oldSerial.setAttribute('aria-expanded', 'true');
+          if (devices.length === 1 && !query) pickOldDevice(devices[0]);
+          else message.textContent = devices.length > 1 ? 'Select the correct assigned device.' : 'Select the matching inventory device.';
+        };
+        const pickOldDevice = (device, { fillStaff = true } = {}) => {
+          selectedOldDevice = device;
+          oldDeviceNeedsChoice = false;
+          oldSerial.value = device.serial;
+          oldSerial.removeAttribute('aria-invalid');
+          document.getElementById('oldDeviceSuggestions').replaceChildren();
+          oldSerial.setAttribute('aria-expanded', 'false');
+          document.getElementById('oldDeviceMessage').textContent = `${device.deviceName || device.serial} selected.`;
+          if (fillStaff && device.staff?.id) selectStaff(device.staff, { fromDevice: true });
+          updateWarning();
+        };
+        const loadStaffDevices = async (user) => {
+          const requestId = ++currentDevicesRequest;
+          const message = document.getElementById('oldDeviceMessage');
+          message.textContent = 'Loading assigned devices…'; message.dataset.loading = 'true';
+          try {
+            const result = await fetchSearchResults(`/api/inventory/assigned-devices?userId=${encodeURIComponent(user.id)}`, 'Assigned device search');
+            if (requestId !== currentDevicesRequest || manualOverrides.has('old')) return;
+            message.dataset.loading = 'false';
+            const devices = result.results || [];
+            staffDeviceCount = devices.length;
+            if (devices.length === 1) pickOldDevice(devices[0], { fillStaff: false });
+            else if (devices.length > 1) { selectedOldDevice = null; oldSerial.value = ''; showOldDevices(devices); }
+            else { selectedOldDevice = null; oldDeviceNeedsChoice = false; oldSerial.value = ''; message.textContent = 'No active assigned device found. You can continue without an old device.'; }
+          } catch (error) { message.dataset.loading = 'false'; message.textContent = error.message || 'Assigned device search failed.'; }
+        };
+        const selectStaff = (user, { fromDevice = false, selectedField = '' } = {}) => {
+          if (selectedField) manualOverrides.delete(selectedField);
+          selectedStaff = user;
+          selectedStaffUserId = user.id;
+          if (!manualOverrides.has('name')) staffName.value = user.name;
+          if (!manualOverrides.has('email')) staffEmail.value = user.email;
+          userFields.forEach(({ input, suggestions, message }) => {
+            suggestions.replaceChildren();
+            input.setAttribute('aria-expanded', 'false');
+            input.removeAttribute('aria-invalid');
+            message.textContent = '';
+            message.dataset.loading = 'false';
+          });
+          if (!fromDevice && !manualOverrides.has('old')) loadStaffDevices(user);
+        };
+        const pickStaff = (user, selectedField = '') => selectStaff(user, { selectedField });
+        const searchStaff = (fieldState) => {
+          const query = fieldState.input.value.trim();
+          clearTimeout(userTimer);
+          selectedStaffUserId = '';
+          selectedStaff = null;
+          fieldState.message.textContent = query ? 'Searching…' : '';
+          fieldState.message.dataset.loading = String(Boolean(query));
+          fieldState.suggestions.replaceChildren();
+          fieldState.input.setAttribute('aria-expanded', 'false');
+          if (!query) return;
+          userTimer = setTimeout(async () => {
+            try {
+              const result = await fetchSearchResults(`/api/users/search?q=${encodeURIComponent(query)}`, 'Staff search');
+              if (fieldState.input.value.trim() !== query) return;
+              const users = result.results || [];
+              fieldState.message.dataset.loading = 'false';
+              fieldState.suggestions.innerHTML = users.map((user) => `
+                <button type="button" class="replacement-suggestion" role="option" data-user-id="${escapeHtml(user.id)}">
+                  <strong>${highlightMatch(user.name, query)}</strong><small>${highlightMatch(user.email, query)}</small>
+                </button>`).join('');
+              fieldState.suggestions.querySelectorAll('[data-user-id]').forEach((button) => {
+                button.addEventListener('click', () => {
+                  const selected = users.find((user) => user.id === button.dataset.userId);
+                  if (selected) pickStaff(selected, fieldState.field);
+                });
+              });
+              fieldState.input.setAttribute('aria-expanded', String(users.length > 0));
+              if (users.length === 1 && !manualOverrides.has(fieldState.field === 'name' ? 'email' : 'name')) {
+                pickStaff(users[0], fieldState.field);
+              } else if (!users.length) {
+                fieldState.input.setAttribute('aria-invalid', 'true');
+                fieldState.message.textContent = 'No matching user. Choose a staff member from the User directory.';
+              } else {
+                fieldState.input.setAttribute('aria-invalid', 'true');
+                fieldState.message.textContent = 'Choose the correct staff member from the suggestions.';
+              }
+            } catch (error) {
+              fieldState.message.dataset.loading = 'false';
+              fieldState.message.textContent = error.message || 'Staff search failed.';
+            }
+          }, 250);
+        };
+        userFields.forEach((fieldState) => fieldState.input.addEventListener('input', () => {
+          manualOverrides.add(fieldState.field);
+          if (selectedStaff && fieldState.input.value.trim() !== selectedStaff[fieldState.field]) {
+            selectedStaffUserId = '';
+            selectedStaff = null;
+            manualOverrides.add(fieldState.field);
+          }
+          searchStaff(fieldState);
+        }));
+        const deviceSuggestions = document.getElementById('replacementDeviceSuggestions');
+        const deviceMessage = document.getElementById('replacementDeviceMessage');
+        const searchOldDevices = () => {
+          const query = oldSerial.value.trim();
+          clearTimeout(oldDeviceTimer);
+          selectedOldDevice = null;
+          oldDeviceNeedsChoice = false;
+          const suggestions = document.getElementById('oldDeviceSuggestions');
+          const message = document.getElementById('oldDeviceMessage');
+          suggestions.replaceChildren(); oldSerial.setAttribute('aria-expanded', 'false');
+          if (!query) { oldSerial.removeAttribute('aria-invalid'); message.textContent = selectedStaff ? 'No old device selected.' : ''; return; }
+          message.textContent = 'Searching assigned inventory…'; message.dataset.loading = 'true';
+          oldDeviceTimer = setTimeout(async () => {
+            try {
+              const result = await fetchSearchResults(`/api/inventory/assigned-devices?q=${encodeURIComponent(query)}`, 'Assigned device search');
+              if (oldSerial.value.trim() !== query) return;
+              const devices = result.results || [];
+              message.dataset.loading = 'false';
+              const matchingOwner = selectedStaff ? devices.filter((device) => device.staff?.id === selectedStaff.id) : devices;
+              if (!matchingOwner.length) {
+                oldSerial.setAttribute('aria-invalid', 'true');
+                const foundElsewhere = devices.length > 0;
+                message.textContent = foundElsewhere ? 'This device belongs to a different staff member.' : 'No active matching device found.';
+                showOldDevices(devices, query);
+                return;
+              }
+              oldSerial.removeAttribute('aria-invalid');
+              showOldDevices(matchingOwner, query);
+              if (matchingOwner.length === 1 && serialKey(matchingOwner[0].serial) === serialKey(query)) pickOldDevice(matchingOwner[0]);
+            } catch (error) { message.dataset.loading = 'false'; message.textContent = error.message || 'Assigned device search failed.'; }
+          }, 250);
         };
         const updateWarning = () => {
           const missing = [];
           if (oldSerial.value.trim() && !inventoryDevice(oldSerial.value)) missing.push(`Old device ${oldSerial.value.trim()} is not found in the current inventory.`);
-          if (newSerial.value.trim() && !inventoryDevice(newSerial.value)) missing.push(`New device ${newSerial.value.trim()} is not found in the current inventory.`);
+          if (newSerial.value.trim() && serialKey(newSerial.value) === serialKey(oldSerial.value)) missing.push('A device cannot replace itself.');
           warning.textContent = missing.join(' ');
         };
-        oldSerial.addEventListener('change', () => {
-          prefillStaff();
-          updateWarning();
-        });
-        oldSerial.addEventListener('input', () => { prefillStaff(); updateWarning(); });
-        newSerial.addEventListener('input', updateWarning);
+        const searchDevices = () => {
+          const query = newSerial.value.trim();
+          clearTimeout(deviceTimer);
+          selectedNewSerial = '';
+          deviceSuggestions.replaceChildren();
+          newSerial.setAttribute('aria-expanded', 'false');
+          newSerial.setAttribute('aria-invalid', 'true');
+          deviceMessage.textContent = query ? 'Searching available inventory…' : '';
+          deviceMessage.dataset.loading = String(Boolean(query));
+          if (!query) return;
+          deviceTimer = setTimeout(async () => {
+            try {
+              const result = await fetchSearchResults(`/api/inventory/available-replacements?q=${encodeURIComponent(query)}&exclude=${encodeURIComponent(oldSerial.value.trim())}`, 'Replacement inventory search');
+              if (newSerial.value.trim() !== query) return;
+              const devices = result.results || [];
+              deviceMessage.dataset.loading = 'false';
+              deviceSuggestions.innerHTML = devices.map((device) => {
+                return `<button type="button" class="replacement-suggestion" role="option" data-device-serial="${escapeHtml(device.serial)}">
+                  <strong>${highlightMatch(device.serial, query)}</strong><small>${highlightMatch([device.model, device.country, device.fixedAssetNumber].filter(Boolean).join(' · '), query)}</small>
+                </button>`;
+              }).join('');
+              deviceSuggestions.querySelectorAll('[data-device-serial]').forEach((button) => {
+                button.addEventListener('click', () => {
+                  selectedNewSerial = button.dataset.deviceSerial;
+                  newSerial.value = selectedNewSerial;
+                  deviceSuggestions.replaceChildren();
+                  newSerial.setAttribute('aria-expanded', 'false');
+                  newSerial.removeAttribute('aria-invalid');
+                  deviceMessage.textContent = 'Available for handout.';
+                  deviceMessage.dataset.loading = 'false';
+                  updateWarning();
+                });
+              });
+              newSerial.setAttribute('aria-expanded', String(devices.length > 0));
+          if (devices.length) newSerial.setAttribute('aria-invalid', 'true');
+              deviceMessage.textContent = devices.length ? 'Select a device from inventory.' : 'No available replacement device matches this search.';
+            } catch (error) {
+              deviceMessage.dataset.loading = 'false';
+              deviceMessage.textContent = error.message || 'Inventory search failed.';
+            }
+          }, 250);
+        };
+        oldSerial.addEventListener('input', () => { manualOverrides.add('old'); searchOldDevices(); updateWarning(); });
+        newSerial.addEventListener('input', () => { searchDevices(); updateWarning(); });
+        if (selectedNewSerial) {
+          const device = inventoryDevice(selectedNewSerial);
+          deviceMessage.textContent = device ? `Current linked device: ${device['Device name'] || selectedNewSerial}` : 'Current linked device.';
+        }
+        if (staffName.value && staffEmail.value) {
+          fetchSearchResults(`/api/users/search?q=${encodeURIComponent(staffEmail.value)}`, 'Staff lookup').then((result) => {
+            const exact = (result.results || []).filter((user) => user.name.toLowerCase() === staffName.value.trim().toLowerCase()
+              && user.email.toLowerCase() === staffEmail.value.trim().toLowerCase());
+            if (exact.length === 1) selectStaff(exact[0], { selectedField: 'name' });
+          }).catch(() => {});
+        }
         updateWarning();
       },
       onConfirm: async () => {
         const form = document.getElementById('replacementForm');
+        const staffName = form.elements.namedItem('Staff Member Name');
+        const newSerial = form.elements.namedItem('New Device Serial Number');
+        if (!form.reportValidity()) return;
+        if (!selectedStaffUserId) {
+          Toast.show('Select a staff member from the User directory before saving.', 'error', 5000);
+          staffName.focus();
+          return;
+        }
+        if (!selectedNewSerial || serialKey(newSerial.value) !== serialKey(selectedNewSerial)) {
+          Toast.show('Select an available replacement device from inventory before saving.', 'error', 5000);
+          newSerial.focus();
+          return;
+        }
         const data = new FormData(form);
         const candidate = {};
         COLUMNS.forEach((column) => {
           candidate[column] = column === 'Replacement ID' ? record[column] : data.get(column);
         });
-        const checked = validateRecord(candidate);
+        const oldInput = form.elements.namedItem('Old Device Serial Number');
+        if (oldDeviceNeedsChoice || (oldInput.value.trim() && (!selectedOldDevice || serialKey(oldInput.value) !== serialKey(selectedOldDevice.serial)))) {
+          Toast.show('Select an old device from the assigned inventory suggestions, or clear the field if this is a new assignment.', 'error', 5000);
+          oldInput.focus();
+          return;
+        }
+        if (!oldInput.value.trim() && staffDeviceCount > 1) {
+          Toast.show('Select which assigned device is being replaced.', 'error', 5000);
+          oldInput.focus();
+          return;
+        }
+        if (selectedStaff && selectedOldDevice && selectedOldDevice.staff?.id !== selectedStaff.id) {
+          Toast.show('The old device is assigned to a different staff member.', 'error', 5000);
+          oldInput.focus();
+          return;
+        }
+        const checked = validateRecord(candidate, { requireStaffEmail: true, allowMissingOldDevice: true });
         if (checked.errors.length) {
           Toast.show(checked.errors[0], 'error', 5000);
           return;
@@ -482,11 +707,22 @@ App.registerModule('replacements', (() => {
         if (alreadyReplaced) warnings.push('This old device already has another replacement event.');
         if (duplicatePair) warnings.push('This old/new serial-number pair already exists.');
         if (warnings.length && !window.confirm(`${warnings.join('\n')}\n\nSave this record anyway?`)) return;
-
-        const nextRecords = existing
-          ? records.map((item) => item['Replacement ID'] === record['Replacement ID'] ? updated : item)
-          : [...records, updated];
-        if (!await persistRecords(nextRecords)) return;
+        try {
+          const response = await fetch('/api/replacement-history/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ record: updated, staffUserId: selectedStaffUserId, existingId: existing ? record['Replacement ID'] : '' })
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || 'Could not save replacement record.');
+          App.store.cache.set('inventory', result.inventory);
+          App.store.cache.set('replacementHistory', result.replacementHistory);
+          records = result.replacementHistory;
+          loaded = true;
+        } catch (error) {
+          Toast.show(error.message || 'Could not save replacement record.', 'error', 6000);
+          return;
+        }
         Modal.close();
         render(document.getElementById('moduleContainer'));
         Toast.show(existing ? 'Replacement record updated and saved to SQLite.' : 'Replacement record added and saved to SQLite.', 'success', 5000);
@@ -565,9 +801,14 @@ App.registerModule('replacements', (() => {
         </div>
         <div class="section-actions replacement-toolbar">
           <button class="btn btn-primary btn-sm" id="addReplacementBtn">+ Add replacement</button>
-          <button class="btn btn-secondary btn-sm" id="importReplacementBtn">Import Replacement History CSV</button>
-          <button class="btn btn-secondary btn-sm" id="exportReplacementBtn">Export Replacement History CSV</button>
-          <button class="btn btn-secondary btn-sm" id="templateReplacementBtn">Download Empty Template</button>
+          <details class="replacement-data-menu">
+            <summary class="btn btn-secondary btn-sm">CSV tools ▾</summary>
+            <div class="replacement-data-menu-items" aria-label="Replacement history CSV tools">
+              <button type="button" id="importReplacementBtn">Import CSV</button>
+              <button type="button" id="exportReplacementBtn">Export CSV</button>
+              <button type="button" id="templateReplacementBtn">Download empty template</button>
+            </div>
+          </details>
           <input id="replacementFileInput" type="file" accept=".csv,text/csv" hidden>
         </div>
       </div>
@@ -576,7 +817,6 @@ App.registerModule('replacements', (() => {
       <div class="filter-bar replacement-filters">
         <input id="replacementSearch" class="search-input" placeholder="Search ID, staff, email, or serial..." value="${escapeHtml(search)}">
         <select id="replacementReasonFilter" class="form-control replacement-filter">${selectOptions(REASONS, reasonFilter, 'All reasons')}</select>
-        <select id="replacementEligibilityFilter" class="form-control replacement-filter">${selectOptions(ELIGIBILITY, eligibilityFilter, 'All deployment status')}</select>
         <select id="replacementLifecycleFilter" class="form-control replacement-filter">${selectOptions(LIFECYCLE, lifecycleFilter, 'All lifecycle')}</select>
         <label class="replacement-date-filter">From <input id="replacementDateFrom" type="date" class="form-control" value="${escapeHtml(dateFrom)}"></label>
         <label class="replacement-date-filter">To <input id="replacementDateTo" type="date" class="form-control" value="${escapeHtml(dateTo)}"></label>
@@ -591,11 +831,9 @@ App.registerModule('replacements', (() => {
       <div class="card replacement-table-wrap">
         <table class="replacement-table">
           <thead><tr>
-            <th>Replacement ID</th><th>Staff Member Name</th><th>Staff Email</th>
-            <th>Old Device Serial Number</th><th>Old Device Name</th>
-            <th>New Device Serial Number</th><th>New Device Name</th><th>Replacement Date</th>
-            <th>Replacement Reason</th><th>Old Device Condition</th><th>Deployment Status</th>
-            <th>Lifecycle Status</th><th>Remarks</th><th>Actions</th>
+            <th>Replacement ID</th><th>Staff Member Name</th>
+            <th>Old Device</th><th>New Device</th><th>Replacement Date</th>
+            <th>Replacement Reason</th><th>Lifecycle Status</th><th>Actions</th>
           </tr></thead>
           <tbody>${renderRows(rows)}</tbody>
         </table>
@@ -620,7 +858,6 @@ App.registerModule('replacements', (() => {
       nextSearch.setSelectionRange(caret, caret);
     });
     container.querySelector('#replacementReasonFilter').addEventListener('change', (event) => { reasonFilter = event.target.value; render(container); });
-    container.querySelector('#replacementEligibilityFilter').addEventListener('change', (event) => { eligibilityFilter = event.target.value; render(container); });
     container.querySelector('#replacementLifecycleFilter').addEventListener('change', (event) => { lifecycleFilter = event.target.value; render(container); });
     container.querySelector('#replacementDateFrom').addEventListener('change', (event) => { dateFrom = event.target.value; render(container); });
     container.querySelector('#replacementDateTo').addEventListener('change', (event) => { dateTo = event.target.value; render(container); });
@@ -629,7 +866,6 @@ App.registerModule('replacements', (() => {
     container.querySelector('#clearReplacementFilters').addEventListener('click', () => {
       search = '';
       reasonFilter = '';
-      eligibilityFilter = '';
       lifecycleFilter = '';
       dateFrom = '';
       dateTo = '';

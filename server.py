@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import traceback
 from contextlib import closing, contextmanager
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -29,8 +30,16 @@ DATA_DIR = DATA_ROOT / "NexIT-Asset-Inventory"
 DATABASE_PATH = DATA_DIR / "nexit-assets.db"
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
 MAX_DATABASE_BACKUP_BYTES = 512 * 1024 * 1024
+API_VERSION = "2026-11-07-autocomplete-v1"
 MISSING_IDENTIFIERS = {"n/a", "na", "none", "null", "unknown", "-"}
 _DB_LOCK = threading.RLock()
+ASSET_FIELD_ENUMS = {
+    "Replacement Status": ("Not replaced", "Replaced", "Pending replacement", "In progress"),
+    "Staff Member Lifecycle Status": ("Active", "Leaver", "Contractor", "Unknown"),
+}
+ELIGIBLE_HANDOUT_STATUS_NAMES = {
+    "ready to deploy", "deployable", "available", "available for handover", "ready for handover",
+}
 
 
 def connect_database(path: Path | None = None) -> sqlite3.Connection:
@@ -91,18 +100,95 @@ def connect_database(path: Path | None = None) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY COLLATE NOCASE,
             position INTEGER NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
             email TEXT NOT NULL DEFAULT '',
             normalized_email TEXT NOT NULL DEFAULT '',
             data_json TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_users_email
             ON users(normalized_email);
+        CREATE TABLE IF NOT EXISTS asset_status_labels (
+            label_id TEXT PRIMARY KEY COLLATE NOCASE,
+            position INTEGER NOT NULL,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            label_type TEXT NOT NULL,
+            data_json TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS app_metadata (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
         """
     )
+    user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
+    if "name" not in user_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    connection.execute("UPDATE users SET name=COALESCE(json_extract(data_json, '$.Name'), '') WHERE name='' ")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_users_name ON users(name COLLATE NOCASE)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_users_email_value ON users(email COLLATE NOCASE)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_device_name ON inventory_devices(device_name COLLATE NOCASE)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_serial_number ON inventory_devices(serial_number COLLATE NOCASE)")
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS asset_field_options (
+            field_name TEXT NOT NULL,
+            value TEXT NOT NULL,
+            is_legacy INTEGER NOT NULL DEFAULT 0 CHECK (is_legacy IN (0, 1)),
+            position INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (field_name, value)
+        )
+    """)
+    for field_name, values in ASSET_FIELD_ENUMS.items():
+        for position, value in enumerate(values):
+            connection.execute(
+                "INSERT OR IGNORE INTO asset_field_options(field_name, value, is_legacy, position) VALUES (?, ?, 0, ?)",
+                (field_name, value, position),
+            )
+        connection.execute(
+            """INSERT OR IGNORE INTO asset_field_options(field_name, value, is_legacy, position)
+               SELECT ?, json_extract(data_json, ?), 1, 1000
+               FROM inventory_devices
+               WHERE trim(COALESCE(json_extract(data_json, ?), '')) <> ''
+                 AND NOT EXISTS (
+                   SELECT 1 FROM asset_field_options AS option
+                   WHERE option.field_name=? AND option.value=json_extract(inventory_devices.data_json, ?)
+                 )""",
+            (field_name, f'$."{field_name}"', f'$."{field_name}"', field_name, f'$."{field_name}"'),
+        )
+    connection.executescript("""
+        CREATE TRIGGER IF NOT EXISTS inventory_enum_insert
+        BEFORE INSERT ON inventory_devices
+        BEGIN
+          SELECT CASE WHEN trim(COALESCE(json_extract(NEW.data_json, '$."Replacement Status"'), '')) <> ''
+            AND NOT EXISTS (SELECT 1 FROM asset_field_options WHERE field_name='Replacement Status' AND value=json_extract(NEW.data_json, '$."Replacement Status"'))
+            THEN RAISE(ABORT, 'Invalid Replacement Status enum value') END;
+          SELECT CASE WHEN trim(COALESCE(json_extract(NEW.data_json, '$."Staff Member Lifecycle Status"'), '')) <> ''
+            AND NOT EXISTS (SELECT 1 FROM asset_field_options WHERE field_name='Staff Member Lifecycle Status' AND value=json_extract(NEW.data_json, '$."Staff Member Lifecycle Status"'))
+            THEN RAISE(ABORT, 'Invalid Staff Member Lifecycle Status enum value') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS inventory_enum_update
+        BEFORE UPDATE OF data_json ON inventory_devices
+        BEGIN
+          SELECT CASE WHEN trim(COALESCE(json_extract(NEW.data_json, '$."Replacement Status"'), '')) <> ''
+            AND NOT EXISTS (SELECT 1 FROM asset_field_options WHERE field_name='Replacement Status' AND value=json_extract(NEW.data_json, '$."Replacement Status"'))
+            THEN RAISE(ABORT, 'Invalid Replacement Status enum value') END;
+          SELECT CASE WHEN trim(COALESCE(json_extract(NEW.data_json, '$."Staff Member Lifecycle Status"'), '')) <> ''
+            AND NOT EXISTS (SELECT 1 FROM asset_field_options WHERE field_name='Staff Member Lifecycle Status' AND value=json_extract(NEW.data_json, '$."Staff Member Lifecycle Status"'))
+            THEN RAISE(ABORT, 'Invalid Staff Member Lifecycle Status enum value') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS replacement_handover_eligibility_insert
+        BEFORE INSERT ON replacement_history
+        BEGIN
+          SELECT CASE WHEN json_type(NEW.data_json, '$."Handover Eligibility"') IS NOT NULL
+            THEN RAISE(ABORT, 'Handover Eligibility is deprecated; remove the field') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS replacement_handover_eligibility_update
+        BEFORE UPDATE OF data_json ON replacement_history
+        BEGIN
+          SELECT CASE WHEN json_type(NEW.data_json, '$."Handover Eligibility"') IS NOT NULL
+            THEN RAISE(ABORT, 'Handover Eligibility is deprecated; remove the field') END;
+        END;
+    """)
+    connection.execute("UPDATE replacement_history SET data_json=json_remove(data_json, '$.\"Handover Eligibility\"') WHERE json_type(data_json, '$.\"Handover Eligibility\"') IS NOT NULL")
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(inventory_devices)")}
     if "device_type" not in columns:
         connection.execute("ALTER TABLE inventory_devices ADD COLUMN device_type TEXT NOT NULL DEFAULT 'laptop'")
@@ -202,6 +288,11 @@ def _serial_key(serial: Any) -> str:
         else:
             break
     return "".join(value.split())
+
+
+def _like_pattern(query: str) -> str:
+    escaped = query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def _asset_serial(record: dict[str, Any]) -> str:
@@ -350,7 +441,7 @@ def _replace_replacement_history(connection: sqlite3.Connection, records: list[d
                 position,
                 _as_text(record, "Old Device Serial Number").strip(),
                 _as_text(record, "New Device Serial Number").strip(),
-                json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+                json.dumps({key: value for key, value in record.items() if key != "Handover Eligibility"}, ensure_ascii=False, separators=(",", ":")),
             ),
         )
 
@@ -453,11 +544,12 @@ def _replace_users(connection: sqlite3.Connection, records: list[dict[str, Any]]
     for position, record in enumerate(records):
         email = _as_text(record, "Email").strip()
         connection.execute(
-            """INSERT INTO users (user_id, position, email, normalized_email, data_json)
-               VALUES (?, ?, ?, ?, ?)""",
+            """INSERT INTO users (user_id, position, name, email, normalized_email, data_json)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 _as_text(record, "User ID").strip(),
                 position,
+                _as_text(record, "Name").strip(),
                 email,
                 email.casefold(),
                 json.dumps(record, ensure_ascii=False, separators=(",", ":")),
@@ -469,6 +561,318 @@ def _read_users(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     return [json.loads(row["data_json"]) for row in connection.execute(
         "SELECT data_json FROM users ORDER BY position, user_id"
     )]
+
+
+def _read_asset_field_options(connection: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {}
+    for row in connection.execute(
+        "SELECT field_name, value, is_legacy FROM asset_field_options ORDER BY field_name, is_legacy, position, value COLLATE NOCASE"
+    ):
+        result.setdefault(row["field_name"], []).append({"value": row["value"], "legacy": bool(row["is_legacy"])})
+    return result
+
+
+def _active_checkout_serials(connection: sqlite3.Connection) -> set[str]:
+    latest = _latest_checkout_events(connection)
+    return {serial for serial, event in latest.items()
+            if _as_text(event, "Event type").casefold() == "checkout"}
+
+
+def _latest_checkout_events(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for event in _read_checkout_history(connection):
+        serial = _asset_serial(event)
+        if serial:
+            latest[serial] = event
+    return latest
+
+
+def _device_staff_identity(connection: sqlite3.Connection, device: dict[str, Any], checkout: dict[str, Any] | None = None) -> dict[str, Any]:
+    name = _as_text(checkout or {}, "Staff name") or _as_text(device, "Primary user display name")
+    email = _as_text(checkout or {}, "Staff email") or _as_text(device, "Primary user email address", "Primary user UPN")
+    user_row = None
+    if email:
+        user_row = connection.execute(
+            "SELECT user_id, name, email FROM users WHERE normalized_email=? COLLATE NOCASE LIMIT 1",
+            (email.strip().casefold(),),
+        ).fetchone()
+    if not user_row and name:
+        matches = connection.execute(
+            "SELECT user_id, name, email FROM users WHERE name=? COLLATE NOCASE ORDER BY position LIMIT 2",
+            (name.strip(),),
+        ).fetchall()
+        if len(matches) == 1:
+            user_row = matches[0]
+    if user_row:
+        return {"id": user_row["user_id"], "name": user_row["name"], "email": user_row["email"]}
+    return {"id": "", "name": name.strip(), "email": email.strip()}
+
+
+ACTIVE_ASSIGNED_STATUS_NAMES = {"deployed", "in use", "active", "checked out", "assigned", "in service"}
+
+
+def _active_assigned_device(device: dict[str, Any], active_checkouts: set[str]) -> bool:
+    serial = _asset_serial(device)
+    status = _as_text(device, "Status Label", "Status").strip().casefold()
+    assigned = bool(_as_text(device, "Primary user email address", "Primary user UPN", "Primary user display name"))
+    active_checkout_keys = {_serial_key(value) for value in active_checkouts}
+    return bool(serial and (_serial_key(serial) in active_checkout_keys
+                            or status in ACTIVE_ASSIGNED_STATUS_NAMES
+                            or (assigned and not status)))
+
+
+def _eligible_handout_device(record: dict[str, Any], active_checkouts: set[str] | None = None) -> bool:
+    serial = _asset_serial(record)
+    if active_checkouts and serial in active_checkouts:
+        return False
+    if _as_text(record, "Primary user email address", "Primary user UPN", "Primary user display name"):
+        return False
+    status = _as_text(record, "Status Label", "Status").strip().casefold()
+    if not status:
+        return True
+    return status in ELIGIBLE_HANDOUT_STATUS_NAMES
+
+
+def _assigned_device_status_label(connection: sqlite3.Connection) -> str:
+    labels = _read_status_labels(connection)
+    deployed = next((label["name"] for label in labels
+                     if label["name"].casefold() == "deployed" and label["type"] == "Deployable"), None)
+    if deployed:
+        return deployed
+    deployable = next((label["name"] for label in labels if label["type"] == "Deployable"), None)
+    if not deployable:
+        raise ValueError("Configure a Deployable status label before assigning a replacement device.")
+    return deployable
+
+
+def _inventory_row_for_serial(connection: sqlite3.Connection, serial: str) -> sqlite3.Row | None:
+    normalized = _serial_key(serial)
+    if not normalized:
+        return None
+    rows = connection.execute(
+        "SELECT id, data_json FROM inventory_devices WHERE normalized_serial=? ORDER BY position, id",
+        (normalized,),
+    ).fetchall()
+    if len(rows) > 1:
+        raise ValueError(f"Serial number {serial} matches multiple inventory records; resolve the duplicate first.")
+    return rows[0] if rows else None
+
+
+def _apply_replacement_links(connection: sqlite3.Connection, records: list[dict[str, Any]]) -> None:
+    current_rows = connection.execute("SELECT data_json FROM inventory_devices ORDER BY position, id").fetchall()
+    active_checkouts = _active_checkout_serials(connection)
+    current: dict[str, dict[str, Any]] = {}
+    for row in current_rows:
+        device = json.loads(row["data_json"])
+        serial = _asset_serial(device)
+        if serial:
+            current[serial] = device
+    incoming_by_serial: dict[str, list[dict[str, Any]]] = {}
+    for device in records:
+        serial = _asset_serial(device)
+        if serial:
+            incoming_by_serial.setdefault(serial, []).append(device)
+    history_by_old_serial: dict[str, list[dict[str, Any]]] = {}
+    for event in _read_replacement_history(connection):
+        old_key = _serial_key(_as_text(event, "Old Device Serial Number"))
+        if old_key:
+            history_by_old_serial.setdefault(old_key, []).append(event)
+    replacement_targets: set[str] = set()
+    for source in records:
+        source_serial = _asset_serial(source)
+        replacement_serial = _as_text(source, "Replaced By Device Serial Number").strip()
+        if not replacement_serial:
+            continue
+        if _serial_key(source_serial) == _serial_key(replacement_serial):
+            raise ValueError("A device cannot replace itself.")
+        previous_serial = _as_text(current.get(source_serial, {}), "Replaced By Device Serial Number").strip()
+        if not previous_serial:
+            previous_events = sorted(history_by_old_serial.get(_serial_key(source_serial), []),
+                                     key=lambda event: (_as_text(event, "Replacement Date"), _as_text(event, "Replacement ID")))
+            previous_serial = " → ".join(_as_text(event, "New Device Serial Number") for event in previous_events)
+        if _serial_key(previous_serial) == _serial_key(replacement_serial):
+            continue
+        target_key = _serial_key(replacement_serial)
+        if target_key in replacement_targets:
+            raise ValueError("A replacement device can be linked to only one old device in an inventory update.")
+        replacement_targets.add(target_key)
+        target_row = _inventory_row_for_serial(connection, replacement_serial)
+        if not target_row:
+            raise ValueError("The replacement device is no longer in inventory. Refresh inventory and choose another device.")
+        target = json.loads(target_row["data_json"])
+        if not _eligible_handout_device(target, active_checkouts):
+            raise ValueError("The replacement device is no longer available for handout. Search again and choose another device.")
+        matching_incoming = incoming_by_serial.get(_serial_key(replacement_serial), [])
+        if len(matching_incoming) != 1:
+            raise ValueError("The selected replacement device has an ambiguous serial number in the inventory update.")
+        incoming_target = matching_incoming[0]
+        incoming_target["Status Label"] = _assigned_device_status_label(connection)
+        incoming_target["Primary user display name"] = _as_text(source, "Primary user display name")
+        incoming_target["Primary user email address"] = _as_text(source, "Primary user email address", "Primary user UPN")
+        incoming_target["Primary user UPN"] = incoming_target["Primary user email address"]
+
+
+def _save_replacement_record(connection: sqlite3.Connection, payload: Any) -> int:
+    if not isinstance(payload, dict) or not isinstance(payload.get("record"), dict):
+        raise ValueError("Replacement save must include a record object.")
+    record = dict(payload["record"])
+    user_id = str(payload.get("staffUserId") or "").strip()
+    if not user_id:
+        raise ValueError("Choose a staff member from the User directory.")
+    user_row = connection.execute(
+        "SELECT data_json FROM users WHERE user_id=? COLLATE NOCASE", (user_id,)
+    ).fetchone()
+    if not user_row:
+        raise ValueError("The selected staff member no longer exists. Search and select them again.")
+    user = json.loads(user_row["data_json"])
+    name = _as_text(user, "Name").strip()
+    email = _as_text(user, "Email").strip()
+    if not name or not email:
+        raise ValueError("The selected user must have both a staff name and email in the User directory.")
+    if _as_text(record, "Staff Member Name").strip().casefold() != name.casefold() \
+            or _as_text(record, "Staff Email").strip().casefold() != email.casefold():
+        raise ValueError("Staff details changed. Select the staff member again before saving.")
+    record["Staff Member Name"] = name
+    record["Staff Email"] = email
+    record.pop("Handover Eligibility", None)
+    replacement_id = _as_text(record, "Replacement ID").strip()
+    old_serial = _as_text(record, "Old Device Serial Number").strip()
+    new_serial = _as_text(record, "New Device Serial Number").strip()
+    if not replacement_id or not new_serial:
+        raise ValueError("Replacement ID and replacement device are required.")
+    if old_serial and _serial_key(old_serial) == _serial_key(new_serial):
+        raise ValueError("A device cannot replace itself.")
+    try:
+        datetime.strptime(_as_text(record, "Replacement Date"), "%Y-%m-%d")
+    except ValueError as error:
+        raise ValueError("Replacement Date must use YYYY-MM-DD format.") from error
+
+    records = _read_replacement_history(connection)
+    existing_index = next((index for index, item in enumerate(records)
+                           if _as_text(item, "Replacement ID").casefold() == replacement_id.casefold()), None)
+    if payload.get("existingId") and (existing_index is None or _as_text(records[existing_index], "Replacement ID") != payload["existingId"]):
+        raise ValueError("This replacement record changed or was removed. Reload history and try again.")
+    if not payload.get("existingId") and existing_index is not None:
+        raise ValueError("That replacement record ID already exists.")
+
+    if old_serial:
+        old_target = _inventory_row_for_serial(connection, old_serial)
+        if not old_target:
+            raise ValueError("The old device serial was not found in inventory.")
+        old_device = json.loads(old_target["data_json"])
+        if not _active_assigned_device(old_device, _active_checkout_serials(connection)):
+            raise ValueError("The old device is no longer in an active assigned state.")
+        latest_old_events = {_serial_key(_asset_serial(event)): event for event in _read_checkout_history(connection)
+                             if _asset_serial(event)}
+        old_identity = _device_staff_identity(connection, old_device, latest_old_events.get(_serial_key(old_serial)))
+        same_staff = old_identity.get("id", "").casefold() == user_id.casefold()
+        if not same_staff and not old_identity.get("id"):
+            same_staff = old_identity.get("email", "").strip().casefold() == email.casefold()
+        if not same_staff:
+            raise ValueError("The old device is not assigned to the selected staff member.")
+    else:
+        active_checkouts = _active_checkout_serials(connection)
+        latest_events = {_serial_key(_asset_serial(event)): event for event in _read_checkout_history(connection)
+                         if _asset_serial(event)}
+        assigned_count = 0
+        for row in connection.execute("SELECT data_json FROM inventory_devices"):
+            device = json.loads(row["data_json"])
+            if not _active_assigned_device(device, active_checkouts):
+                continue
+            identity = _device_staff_identity(connection, device, latest_events.get(_serial_key(_asset_serial(device))))
+            if identity.get("id", "").casefold() == user_id.casefold():
+                assigned_count += 1
+        if assigned_count:
+            raise ValueError("Select one of this staff member's active assigned devices, or clear the assignment in inventory first.")
+
+    old_target_serial = _as_text(records[existing_index], "New Device Serial Number") if existing_index is not None else ""
+    if old_target_serial and _serial_key(old_target_serial) != _serial_key(new_serial):
+        prior_target = _inventory_row_for_serial(connection, old_target_serial)
+        if prior_target:
+            prior_device = json.loads(prior_target["data_json"])
+            if (_as_text(prior_device, "Status Label").casefold() != "deployed"
+                    or _as_text(prior_device, "Primary user email address", "Primary user UPN").casefold() != email.casefold()):
+                raise ValueError("The previous replacement device has changed since this event. Resolve its assignment before editing this record.")
+            prior_device["Status Label"] = "Ready to Deploy"
+            prior_device["Primary user display name"] = ""
+            prior_device["Primary user email address"] = ""
+            prior_device["Primary user UPN"] = ""
+            connection.execute("UPDATE inventory_devices SET data_json=? WHERE id=?",
+                               (json.dumps(prior_device, ensure_ascii=False, separators=(",", ":")), prior_target["id"]))
+
+    target = _inventory_row_for_serial(connection, new_serial)
+    if not target:
+        raise ValueError("The replacement device is no longer in inventory. Refresh inventory and choose another device.")
+    target_record = json.loads(target["data_json"])
+    is_same_existing_target = bool(old_target_serial and _serial_key(old_target_serial) == _serial_key(new_serial))
+    if not _eligible_handout_device(target_record, _active_checkout_serials(connection)) and not is_same_existing_target:
+        raise ValueError("The replacement device is no longer available for handout. Search again and choose an available device.")
+    target_record["Status Label"] = _assigned_device_status_label(connection)
+    target_record["Primary user display name"] = name
+    target_record["Primary user email address"] = email
+    target_record["Primary user UPN"] = email
+    connection.execute("UPDATE inventory_devices SET data_json=? WHERE id=?",
+                       (json.dumps(target_record, ensure_ascii=False, separators=(",", ":")), target["id"]))
+
+    if existing_index is None:
+        records.append(record)
+    else:
+        records[existing_index] = record
+    _replace_replacement_history(connection, records)
+    return len(records)
+
+
+DEFAULT_STATUS_LABELS = [
+    {"id": "ready-to-deploy", "name": "Ready to Deploy", "type": "Deployable"},
+    {"id": "deployed", "name": "Deployed", "type": "Deployable"},
+    {"id": "awaiting-reimaging", "name": "Awaiting Re-Imaging", "type": "Pending"},
+    {"id": "in-repair", "name": "In Repair", "type": "Undeployable"},
+    {"id": "decommissioned", "name": "Decommissioned", "type": "Archived"},
+    {"id": "archived", "name": "Archived", "type": "Archived"},
+]
+STATUS_LABEL_TYPES = {"Undeployable", "Deployable", "Archived", "Pending"}
+
+
+def _replace_status_labels(connection: sqlite3.Connection, records: list[dict[str, Any]]) -> None:
+    seen_ids: set[str] = set()
+    seen_names: set[str] = set()
+    for record in records:
+        label_id = str(record.get("id") or "").strip()
+        name = str(record.get("name") or "").strip()
+        label_type = str(record.get("type") or "").strip()
+        if not label_id or not name or label_type not in STATUS_LABEL_TYPES:
+            raise ValueError("Every status label needs an ID, name, and valid characteristic.")
+        if label_id.casefold() in seen_ids or name.casefold() in seen_names:
+            raise ValueError("Status label IDs and names must be unique.")
+        seen_ids.add(label_id.casefold())
+        seen_names.add(name.casefold())
+    connection.execute("DELETE FROM asset_status_labels")
+    for position, record in enumerate(records):
+        label = {"id": str(record["id"]).strip(), "name": str(record["name"]).strip(), "type": str(record["type"]).strip()}
+        connection.execute(
+            "INSERT INTO asset_status_labels(label_id, position, name, label_type, data_json) VALUES (?, ?, ?, ?, ?)",
+            (label["id"], position, label["name"], label["type"], json.dumps(label, ensure_ascii=False)),
+        )
+
+
+def _read_status_labels(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = [json.loads(row[0]) for row in connection.execute(
+        "SELECT data_json FROM asset_status_labels ORDER BY position, label_id"
+    )]
+    migration = connection.execute(
+        "SELECT 1 FROM app_metadata WHERE key='status_labels_decommissioned_migrated'"
+    ).fetchone()
+    if migration is None:
+        if rows:
+            if not any(label["id"].casefold() == "decommissioned" or label["name"].casefold() == "decommissioned" for label in rows):
+                rows.append(next(label for label in DEFAULT_STATUS_LABELS if label["id"] == "decommissioned"))
+        else:
+            rows = list(DEFAULT_STATUS_LABELS)
+        _replace_status_labels(connection, rows)
+        connection.execute(
+            "INSERT INTO app_metadata(key, value) VALUES('status_labels_decommissioned_migrated', '1')"
+        )
+    return rows
 
 
 class InventoryRequestHandler(SimpleHTTPRequestHandler):
@@ -485,6 +889,112 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _run_json_search(self, label: str, search) -> None:
+        try:
+            results = search()
+            self._send_json(200, {"results": results})
+        except Exception as error:
+            self.log_error("%s search failed: %s", label, error)
+            traceback.print_exc(file=sys.stderr)
+            self._send_json(500, {"error": str(error) or f"{label} search failed."})
+
+    def _logged_search_rows(self, label: str, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
+        self.log_message("SEARCH %s SQL=%s PARAMS=%r", label, sql, params)
+        with _DB_LOCK, database_connection() as connection:
+            return connection.execute(sql, params).fetchall()
+
+    def _search_users(self, query_string: str) -> list[dict[str, str]]:
+        params = parse_qs(query_string, keep_blank_values=False, max_num_fields=5)
+        query = params.get("q", [""])[0].strip()
+        if not query:
+            return []
+        pattern = _like_pattern(query)
+        sql = ("SELECT user_id, name, email FROM users "
+               "WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\' "
+               "OR LOWER(email) LIKE LOWER(?) ESCAPE '\\' "
+               "ORDER BY name COLLATE NOCASE, user_id LIMIT 40")
+        rows = self._logged_search_rows("users", sql, (pattern, pattern))
+        return [{"id": row["user_id"], "name": row["name"], "email": row["email"]} for row in rows]
+
+    def _search_available_replacements(self, query_string: str) -> list[dict[str, Any]]:
+        params = parse_qs(query_string, keep_blank_values=False, max_num_fields=8)
+        query = params.get("q", [""])[0].strip()
+        excluded = {_serial_key(value) for value in params.get("exclude", [""])[0].split("|") if value.strip()}
+        if not query:
+            return []
+        pattern = _like_pattern(query)
+        sql = ("SELECT data_json FROM inventory_devices "
+               "WHERE LOWER(device_name) LIKE LOWER(?) ESCAPE '\\' "
+               "OR LOWER(serial_number) LIKE LOWER(?) ESCAPE '\\' "
+               "OR LOWER(data_json) LIKE LOWER(?) ESCAPE '\\' "
+               "ORDER BY position, id")
+        rows = self._logged_search_rows("available-replacements", sql, (pattern, pattern, pattern))
+        with _DB_LOCK, database_connection() as connection:
+            active_checkouts = _active_checkout_serials(connection)
+        devices = []
+        needle = query.casefold()
+        for row in rows:
+            device = json.loads(row["data_json"])
+            serial = _asset_serial(device).strip()
+            fields = [serial, _as_text(device, "Model"), _as_text(device, "Country"),
+                      _as_text(device, "Fixed Asset Number"), _as_text(device, "Device name", "IntuneGroup.DeviceName")]
+            if not serial or _serial_key(serial) in excluded or not _eligible_handout_device(device, active_checkouts):
+                continue
+            if not any(needle in value.casefold() for value in fields):
+                continue
+            devices.append({"serial": serial, "model": fields[1], "country": fields[2],
+                            "fixedAssetNumber": fields[3], "deviceName": fields[4],
+                            "status": _as_text(device, "Status Label", "Status") or "Ready to Deploy"})
+            if len(devices) == 40:
+                break
+        return devices
+
+    def _search_assigned_devices(self, query_string: str) -> list[dict[str, Any]]:
+        params = parse_qs(query_string, keep_blank_values=False, max_num_fields=8)
+        query = params.get("q", [""])[0].strip()
+        user_id = params.get("userId", [""])[0].strip()
+        if not query and not user_id:
+            return []
+        if query:
+            pattern = _like_pattern(query)
+            sql = ("SELECT data_json FROM inventory_devices "
+                   "WHERE LOWER(device_name) LIKE LOWER(?) ESCAPE '\\' "
+                   "OR LOWER(serial_number) LIKE LOWER(?) ESCAPE '\\' "
+                   "OR LOWER(data_json) LIKE LOWER(?) ESCAPE '\\' "
+                   "ORDER BY position, id")
+            rows = self._logged_search_rows("assigned-devices", sql, (pattern, pattern, pattern))
+        else:
+            sql = "SELECT data_json FROM inventory_devices ORDER BY position, id"
+            rows = self._logged_search_rows("assigned-devices", sql)
+        with _DB_LOCK, database_connection() as connection:
+            active_checkouts = _active_checkout_serials(connection)
+            latest_events = {_serial_key(_asset_serial(event)): event for event in _read_checkout_history(connection)
+                             if _asset_serial(event)}
+            if user_id:
+                user_sql = "SELECT 1 FROM users WHERE user_id=? COLLATE NOCASE"
+                self.log_message("SEARCH assigned-devices SQL=%s PARAMS=%r", user_sql, (user_id,))
+                if not connection.execute(user_sql, (user_id,)).fetchone():
+                    return []
+            devices = []
+            needle = query.casefold()
+            for row in rows:
+                device = json.loads(row["data_json"])
+                serial = _asset_serial(device).strip()
+                if not serial or not _active_assigned_device(device, active_checkouts):
+                    continue
+                identity = _device_staff_identity(connection, device, latest_events.get(_serial_key(serial)))
+                if user_id and identity.get("id", "").casefold() != user_id.casefold():
+                    continue
+                fields = [serial, _as_text(device, "Device name", "IntuneGroup.DeviceName"),
+                          _as_text(device, "Model"), identity.get("name", ""), identity.get("email", "")]
+                if query and not any(needle in value.casefold() for value in fields):
+                    continue
+                devices.append({"serial": serial, "deviceName": fields[1], "model": fields[2],
+                                "country": _as_text(device, "Country"),
+                                "fixedAssetNumber": _as_text(device, "Fixed Asset Number"),
+                                "status": _as_text(device, "Status Label", "Status"), "staff": identity})
+            return devices[:80]
 
     def _read_json(self) -> Any:
         try:
@@ -524,8 +1034,30 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlsplit(self.path)
+        if parsed.path == "/api/users/search":
+            self._run_json_search("users", lambda: self._search_users(parsed.query))
+            return
+        if parsed.path == "/api/inventory/available-replacements":
+            self._run_json_search("available-replacements", lambda: self._search_available_replacements(parsed.query))
+            return
+        if parsed.path == "/api/inventory/assigned-devices":
+            self._run_json_search("assigned-devices", lambda: self._search_assigned_devices(parsed.query))
+            return
+        if parsed.path == "/api/field-options":
+            try:
+                with _DB_LOCK, database_connection() as connection:
+                    self._send_json(200, {"options": _read_asset_field_options(connection)})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Field option query failed: %s", error)
+                self._send_json(500, {"error": "Could not load device field options."})
+            return
         if parsed.path == "/api/health":
-            self._send_json(200, {"status": "ok", "database": str(DATABASE_PATH)})
+            self._send_json(200, {
+                "status": "ok",
+                "database": str(DATABASE_PATH),
+                "apiVersion": API_VERSION,
+                "replacementAutocomplete": True,
+            })
             return
         if parsed.path == "/api/backup":
             try:
@@ -558,9 +1090,12 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                     records = _read_inventory(connection)
                     replacements = _read_replacement_history(connection)
                     checkout_history = _read_checkout_history(connection)
-                options = filter_options(records)
+                    status_labels = _read_status_labels(connection)
+                options = filter_options(records, status_labels=status_labels, checkout_history=checkout_history)
                 options["warrantyStatus"] = options.pop("warranty", [])
                 options["plannedAction"] = options.pop("planned_action", [])
+                options["assetStatus"] = options.pop("asset_status", [])
+                options["onlineStatus"] = options.pop("online_status", [])
                 self._send_json(200, {
                     "filterOptions": options,
                     "sourceRecordCount": len(records),
@@ -574,25 +1109,52 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path in {"/api/dashboard", "/api/dashboard/records"}:
             try:
                 params = parse_qs(parsed.query, keep_blank_values=False, max_num_fields=20)
-                filter_names = {"country": "country", "department": "department", "os": "os", "status": "status", "lifecycle": "lifecycle", "warrantyStatus": "warranty", "plannedAction": "planned_action", "model": "model"}
+                filter_names = {
+                    "country": "country", "category": "category", "assetStatus": "asset_status",
+                    "onlineStatus": "online_status", "os": "os", "manufacturer": "manufacturer",
+                    "warrantyStatus": "warranty", "department": "department", "status": "status",
+                    "lifecycle": "lifecycle", "plannedAction": "planned_action", "model": "model",
+                }
                 filters = {field: params[name][0] for name, field in filter_names.items() if params.get(name)}
                 with _DB_LOCK, database_connection() as connection:
                     records = _read_inventory(connection)
+                    status_labels = _read_status_labels(connection)
+                    checkout_history = _read_checkout_history(connection)
                 if parsed.path == "/api/dashboard/records":
                     metric = params.get("metric", [""])[0]
-                    indexes = matching_record_indexes(records, filters, metric)
+                    indexes = matching_record_indexes(records, filters, metric, status_labels=status_labels, checkout_history=checkout_history)
                     self._send_json(200, {"recordIndexes": indexes})
                 else:
-                    self._send_json(200, build_dashboard(records, filters))
+                    self._send_json(200, build_dashboard(records, filters, status_labels=status_labels, checkout_history=checkout_history))
             except ValueError as error:
                 self._send_json(400, {"error": str(error)})
             except (OSError, sqlite3.Error) as error:
                 self.log_error("Dashboard query failed: %s", error)
                 self._send_json(500, {"error": "Could not load dashboard data."})
             return
+        if parsed.path.startswith("/api/"):
+            self._send_json(404, {"error": f"API route not found: {parsed.path}"})
+            return
         super().do_GET()
 
     def do_POST(self) -> None:
+        if self.path == "/api/replacement-history/save":
+            try:
+                payload = self._read_json()
+                with _DB_LOCK, database_connection() as connection:
+                    saved = _save_replacement_record(connection, payload)
+                    response = {
+                        "saved": saved,
+                        "inventory": _read_inventory(connection),
+                        "replacementHistory": _read_replacement_history(connection),
+                    }
+                self._send_json(200, response)
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Replacement record save failed: %s", error)
+                self._send_json(500, {"error": "Could not save replacement record and update device assignment."})
+            return
         if self.path == "/api/restore":
             upload_path = None
             try:
@@ -671,6 +1233,8 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                     "replacementHistory": _read_replacement_history(connection),
                     "checkoutHistory": _read_checkout_history(connection),
                     "users": _read_users(connection),
+                    "statusLabels": _read_status_labels(connection),
+                    "fieldOptions": _read_asset_field_options(connection),
                     "migrated": did_migrate,
                 }
             self._send_json(200, response)
@@ -687,6 +1251,7 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
             "/api/replacement-history": "replacement_history",
             "/api/checkout-history": "checkout_history",
             "/api/users": "users",
+            "/api/status-labels": "status_labels",
         }.get(self.path)
         if table is None:
             self._send_json(404, {"error": "API route not found."})
@@ -697,6 +1262,7 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                 raise ValueError("Request body must be a JSON array of records.")
             with _DB_LOCK, database_connection() as connection:
                 if table == "inventory":
+                    _apply_replacement_links(connection, records)
                     _replace_inventory(connection, records)
                     count = connection.execute("SELECT COUNT(*) FROM inventory_devices").fetchone()[0]
                 elif table == "warranty":
@@ -705,6 +1271,9 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                 elif table == "users":
                     _replace_users(connection, records)
                     count = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+                elif table == "status_labels":
+                    _replace_status_labels(connection, records)
+                    count = connection.execute("SELECT COUNT(*) FROM asset_status_labels").fetchone()[0]
                 else:
                     if table == "replacement_history":
                         _replace_replacement_history(connection, records)

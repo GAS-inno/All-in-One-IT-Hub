@@ -23,36 +23,71 @@ App.registerModule('inventory', (() => {
   };
   const FIXED_ASSET_NUMBER_HELP = 'This number is from Finance, SAP book Asset number. If you do not have it, please check with Finance asset manager.';
   const DEFAULT_COLUMNS = [
-    'Asset type', 'Fixed Asset Number', 'Device ID', 'Device name', 'Country', 'Ownership', 'Compliance', 'OS', 'OS version',
+    'Asset type', 'Fixed Asset Number', 'Device ID', 'Device name', 'Status Label', 'Country', 'Ownership', 'Compliance', 'OS', 'OS version', 'JoinType', 'Managed by',
     'Primary user email address', 'Primary user UPN', 'Last check-in', 'Enrollment date',
-    'Model', 'Manufacturer', 'Serial number', 'Primary user display name', 'Total storage',
+    'Model', 'Manufacturer', 'Serial number', 'Primary user display name',
     'Free storage', 'Azure AD registered', 'IntuneGroup.GroupName', 'IntuneGroup.DeviceName',
     'IntuneGroup.SerialNumber', 'IntuneGroup.GroupTag', 'IntuneGroup.Model', 'IntuneGroup.Manufacturer',
-    'WindowsVersion', 'Total storage (GB)', 'Location', 'Management IP', 'Firmware version',
-    'UPS Capacity (VA)', 'Battery replacement date', 'Warranty Start Date', 'Warranty End Date', 'Warranty Match Status', 'Age', 'Active device status'
+    'WindowsVersion', 'Total storage (GB)', 'Location', 'Device IP', 'Firmware version',
+    'UPS Capacity (VA)', 'Battery replacement date', 'Warranty Start Date', 'Warranty End Date', 'Warranty Match Status', 'Age', 'Device Online Status'
   ];
-  const CHECKOUT_COLUMNS = ['Custody Status', 'Current Custodian', 'Expected Return Date'];
+  const CHECKOUT_COLUMNS = ['Expected Return Date'];
   const REPLACEMENT_COLUMNS = [
     'Replacement Status', 'Replaced For Staff Member', 'Replacement Date',
-    'Replaced By Device Serial Number', 'Replacement Count', 'Handover Eligibility', 'Lifecycle Status'
+    'Replaced By Device Serial Number', 'Replacement Count', 'Lifecycle Status'
   ];
   const DEFAULT_VISIBLE_COLUMNS = [
-    'Asset type', 'Fixed Asset Number', 'Device name', 'Country', 'Serial number', 'Manufacturer', 'Model', 'Location',
-    'Management IP', 'Firmware version', 'UPS Capacity (VA)', 'Battery replacement date', 'Compliance',
+    'Asset type', 'Fixed Asset Number', 'Device name', 'Status', 'Country', 'Serial number', 'Manufacturer', 'Model', 'Location',
+    'OS version', 'Azure AD registered', 'JoinType', 'Enrollment date', 'Managed by', 'Device IP',
+    'Firmware version', 'UPS Capacity (VA)', 'Battery replacement date', 'Compliance',
     'Primary user email address', 'IntuneGroup.GroupName', 'IntuneGroup.GroupTag',
     'Last check-in', 'Total storage (GB)', 'Warranty Start Date', 'Warranty End Date', 'Age',
-    'Warranty Match Status', 'Active device status', ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS
+    'Device Online Status', ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS
   ];
   const LAYOUT_COLUMNS = [
-    'Asset type', 'Fixed Asset Number', 'Device name', 'Country', 'Serial number', 'Manufacturer', 'Model', 'Location',
-    'Management IP', 'Firmware version', 'UPS Capacity (VA)', 'Battery replacement date', 'OS', 'Compliance',
-    'Primary user email address', 'IntuneGroup.GroupName', 'IntuneGroup.GroupTag', 'Last check-in', 'Active device status',
-    'Total storage (GB)', 'Warranty Start Date', 'Warranty End Date', 'Age', 'Warranty Match Status',
+    'Asset type', 'Fixed Asset Number', 'Device ID', 'Device name', 'Status', 'Country', 'Ownership', 'Compliance', 'OS', 'OS version',
+    'Primary user email address', 'Primary user UPN', 'Last check-in', 'Enrollment date',
+    'Model', 'Manufacturer', 'Serial number', 'Primary user display name',
+    'Free storage', 'Azure AD registered', 'JoinType', 'Managed by', 'IntuneGroup.GroupName', 'IntuneGroup.DeviceName',
+    'IntuneGroup.SerialNumber', 'IntuneGroup.GroupTag', 'IntuneGroup.Model', 'IntuneGroup.Manufacturer',
+    'WindowsVersion', 'Total storage (GB)', 'Location', 'Device IP', 'Firmware version',
+    'UPS Capacity (VA)', 'Battery replacement date', 'Warranty Start Date', 'Warranty End Date', 'Age', 'Device Online Status',
     ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS
   ];
 
   function normalizeHeader(value) {
     return String(value || '').replace(/\uFEFF/g, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  }
+
+  function getInventoryField(device, field) {
+    const aliases = {
+      'OS version': ['OS Version'],
+      'Azure AD registered': ['Azure AD Registered'],
+      JoinType: ['Join Type', 'Join type'],
+      'Enrollment date': ['Enrollment Date'],
+      'Last check-in': ['Last Check-In', 'Last checkin', 'Last Check In'],
+      'Warranty Start Date': ['Warranty start date'],
+      'Warranty End Date': ['Warranty end date'],
+      'Managed by': ['Managed By'],
+      'Device IP': ['Management IP', 'Device IP Address']
+    }[field] || [];
+    const usable = (value) => value !== undefined && value !== null && String(value).trim() !== '' && !['null', 'undefined'].includes(String(value).trim().toLowerCase());
+    if (usable(device?.[field])) return device[field];
+    return aliases.map((alias) => device?.[alias]).find(usable) ?? '';
+  }
+
+  const IMPORT_SOURCE_VALUES = Symbol('inventoryImportSourceValues');
+
+  function hasImportValue(value) {
+    if (value === null || value === undefined) return false;
+    const text = String(value).trim();
+    return Boolean(text) && !['null', 'undefined'].includes(text.toLowerCase());
+  }
+
+  function hasImportedSourceValue(record, ...headers) {
+    const sourceValues = record[IMPORT_SOURCE_VALUES];
+    if (!(sourceValues instanceof Map)) return false;
+    return headers.some((header) => hasImportValue(sourceValues.get(normalizeHeader(header))));
   }
 
   const MAX_HISTORY_STATES = 10;
@@ -64,6 +99,9 @@ App.registerModule('inventory', (() => {
   let dashboardFilterLabel = '';
   let selectedDeviceIndexes = new Set();
   let activeDeviceType = '';
+  let archivedView = false;
+  let columnDrawerOpen = false;
+  let columnSearchTerm = '';
   let checkoutIndexSource = null;
   let checkoutIndexes = { current: new Map(), assetKeys: new Set() };
 
@@ -209,15 +247,17 @@ App.registerModule('inventory', (() => {
     if (events !== checkoutIndexSource) {
       const current = new Map();
       const assetKeys = new Set();
+      const lastEvent = new Map();
       events.forEach((event) => {
         const key = getCheckoutEventAssetKey(event);
         if (!key) return;
         assetKeys.add(key);
+        lastEvent.set(key, event);
         if (event['Event type'] === 'checkout') current.set(key, event);
         else current.delete(key);
       });
       checkoutIndexSource = events;
-      checkoutIndexes = { current, assetKeys };
+      checkoutIndexes = { current, assetKeys, lastEvent };
     }
     return checkoutIndexes;
   }
@@ -334,14 +374,14 @@ App.registerModule('inventory', (() => {
     try {
       const saved = JSON.parse(localStorage.getItem('nexit_inventory_layout') || 'null');
       if (!saved || !Array.isArray(saved.visible) || !saved.visible.length) return DEFAULT_VISIBLE_COLUMNS;
-      if (saved.version !== 9) {
-        const allowedColumns = [...DEFAULT_COLUMNS, ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS];
-        const migrated = Array.from(new Set([...saved.visible, 'Asset type', 'Fixed Asset Number', 'Country', 'Location', 'Age', 'Active device status', ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS]))
+      if (saved.version !== 16) {
+        const allowedColumns = [...LAYOUT_COLUMNS];
+        const migrated = Array.from(new Set([...saved.visible.filter((col) => col !== 'Active device status'), 'Asset type', 'Fixed Asset Number', 'Status', 'Country', 'Location', 'OS version', 'Azure AD registered', 'JoinType', 'Enrollment date', 'Managed by', 'Device IP', 'Age', 'Device Online Status', ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS]))
           .filter((col) => allowedColumns.includes(col));
         saveVisibleColumns(migrated);
         return migrated;
       }
-      const allowedColumns = [...DEFAULT_COLUMNS, ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS];
+      const allowedColumns = [...LAYOUT_COLUMNS];
       const visible = saved.visible.filter((col) => allowedColumns.includes(col));
       return visible.length ? visible : ['Device name'];
     } catch {
@@ -350,7 +390,7 @@ App.registerModule('inventory', (() => {
   }
 
   function saveVisibleColumns(columns) {
-    localStorage.setItem('nexit_inventory_layout', JSON.stringify({ visible: columns, version: 9 }));
+    localStorage.setItem('nexit_inventory_layout', JSON.stringify({ visible: columns, version: 16 }));
   }
 
   function toNumber(value) {
@@ -365,7 +405,7 @@ App.registerModule('inventory', (() => {
   }
 
   function normalizeSerialKey(value) {
-    return normalizeSerial(value).replace(/--\d+$/, '').replace(/\s+/g, '');
+    return normalizeSerial(value).replace(/--?\d+$/, '').replace(/\s+/g, '');
   }
 
   function parseStorageValue(rawValue, sourceUnit = 'bytes') {
@@ -379,6 +419,12 @@ App.registerModule('inventory', (() => {
     return num;
   }
 
+  function getTotalStorageGb(device) {
+    const gigabytes = toNumber(device?.['Total storage (GB)']);
+    if (gigabytes !== null) return gigabytes;
+    return parseStorageValue(device?.['Total storage'] || device?.['Total Storage'], 'bytes');
+  }
+
   function formatGb(value) {
     if (value === null || value === undefined || value === '') return '—';
     return Number(value).toFixed(2);
@@ -387,6 +433,25 @@ App.registerModule('inventory', (() => {
   function parseDateValue(value) {
     const text = String(value || '').trim();
     if (!text) return null;
+    const displayDate = text.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+    if (displayDate) {
+      const month = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(displayDate[2].toLowerCase());
+      if (month >= 0) {
+        const date = new Date(Number(displayDate[3]), month, Number(displayDate[1]));
+        if (date.getFullYear() === Number(displayDate[3]) && date.getMonth() === month && date.getDate() === Number(displayDate[1])) return date;
+        return null;
+      }
+    }
+    const slashDate = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+    if (slashDate) {
+      const first = Number(slashDate[1]);
+      const second = Number(slashDate[2]);
+      const day = first > 12 || second <= 12 ? first : second;
+      const month = first > 12 || second <= 12 ? second : first;
+      const date = new Date(Number(slashDate[3]), month - 1, day);
+      if (date.getFullYear() === Number(slashDate[3]) && date.getMonth() === month - 1 && date.getDate() === day) return date;
+      return null;
+    }
     const date = new Date(text);
     return Number.isNaN(date.getTime()) ? null : date;
   }
@@ -394,13 +459,74 @@ App.registerModule('inventory', (() => {
   function getDaysSince(dateValue) {
     const date = parseDateValue(dateValue);
     if (!date) return null;
-    return Math.round((Date.now() - date.getTime()) / 86400000);
+    return Math.floor((Date.now() - date.getTime()) / 86400000);
   }
 
-  function getActiveDeviceStatus(device) {
-    const daysSinceCheckIn = getDaysSince(device['Last check-in']);
-    if (daysSinceCheckIn !== null && daysSinceCheckIn > 90) return 'Inactive';
+  function deriveDeviceOnlineStatus(device) {
+    const daysSinceCheckIn = getDaysSince(getInventoryField(device, 'Last check-in'));
+    if (daysSinceCheckIn === null) return 'Unknown';
+    if (daysSinceCheckIn > 90) return 'Inactive>90days';
     return 'Active';
+  }
+
+  function getDeviceOnlineStatus(device) {
+    const manualStatus = String(device['Device Online Status'] || '').trim();
+    return ['Active', 'Inactive>90days', 'Unknown'].includes(manualStatus)
+      ? manualStatus
+      : deriveDeviceOnlineStatus(device);
+  }
+
+  function dateInputValue(value) {
+    const text = String(value ?? '').trim();
+    if (!text) return '';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (match) return `${String(Number(match[3])).padStart(2, '0')}-${months[Number(match[2]) - 1] || ''}-${match[1]}`;
+    const yearFirst = text.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+    if (yearFirst) return `${String(Number(yearFirst[3])).padStart(2, '0')}-${months[Number(yearFirst[2]) - 1] || ''}-${yearFirst[1]}`;
+    const displayDate = text.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+    if (displayDate) return `${String(Number(displayDate[1])).padStart(2, '0')}-${displayDate[2][0].toUpperCase()}${displayDate[2].slice(1).toLowerCase()}-${displayDate[3]}`;
+    const slashDate = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+    if (slashDate) {
+      const [, first, second, year] = slashDate;
+      const firstNumber = Number(first);
+      const secondNumber = Number(second);
+      const day = firstNumber > 12 || secondNumber <= 12 ? firstNumber : secondNumber;
+      const month = firstNumber > 12 || secondNumber <= 12 ? secondNumber : firstNumber;
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        return `${String(day).padStart(2, '0')}-${months[month - 1]}-${year}`;
+      }
+    }
+    return text;
+  }
+
+  function getStatusLabels() {
+    const labels = App.store.get('statusLabels');
+    return Array.isArray(labels) && labels.length ? labels : [
+      { id: 'ready-to-deploy', name: 'Ready to Deploy', type: 'Deployable' },
+      { id: 'deployed', name: 'Deployed', type: 'Deployable' },
+      { id: 'awaiting-reimaging', name: 'Awaiting Re-Imaging', type: 'Pending' },
+      { id: 'in-repair', name: 'In Repair', type: 'Undeployable' },
+      { id: 'decommissioned', name: 'Decommissioned', type: 'Archived' },
+      { id: 'archived', name: 'Archived', type: 'Archived' }
+    ];
+  }
+
+  function getStatusLabelType(device) {
+    const name = String(device['Status Label'] || '').trim();
+    const existing = getStatusLabels().find((label) => label.name.toLowerCase() === name.toLowerCase());
+    return existing?.type || (name ? 'Undeployable' : 'Deployable');
+  }
+
+  function getStatusLabelName(device) {
+    if (device['Status Label']) return device['Status Label'];
+    return getCurrentCheckout(device) || getPrimaryUser(device) ? 'Deployed' : 'Ready to Deploy';
+  }
+
+  function getMetaStatus(device) {
+    const label = getStatusLabelName(device);
+    const assigned = Boolean(getCurrentCheckout(device) || getPrimaryUser(device));
+    return getStatusLabelType(device) === 'Deployable' && assigned ? 'Deployed' : label;
   }
 
   function getWarrantyAge(startDateValue, endDateValue) {
@@ -422,7 +548,8 @@ App.registerModule('inventory', (() => {
   function coerceRecord(rawRow) {
     const record = {};
     Object.entries(rawRow).forEach(([key, value]) => {
-      record[key] = value == null ? '' : String(value).trim();
+      const text = value == null ? '' : String(value).trim();
+      record[key] = ['null', 'undefined'].includes(text.toLowerCase()) ? '' : text;
     });
 
     const serialFromRaw = [
@@ -440,7 +567,7 @@ App.registerModule('inventory', (() => {
 
     const userEmail = record['Primary user email address'] || record['Primary User Email Address'] || record['User Principal Name'] || record['Primary user UPN'] || '';
     const userDisplayName = record['Primary user display name'] || record['Primary User Display Name'] || '';
-    const groupName = record['IntuneGroup.GroupName'] || record['IntuneGroup.Group Name'] || record['Group Name'] || '';
+    const groupName = record['IntuneGroup.GroupName'] || record['IntuneGroup.Group Name'] || record['Intune GroupName'] || record['Intune Group GroupName'] || record['Group Name'] || '';
     const groupTag = record['IntuneGroup.GroupTag'] || record['Group tag'] || record['Group Tag'] || record['GroupTag'] || '';
     const storageRaw = record['Total storage'] || record['Total Storage'] || '';
     const storageGb = parseStorageValue(storageRaw, 'bytes');
@@ -455,7 +582,7 @@ App.registerModule('inventory', (() => {
       }
     }
 
-    return {
+    const coerced = {
       ...record,
       'Asset type': assetType,
       'Device ID': deviceId,
@@ -466,16 +593,29 @@ App.registerModule('inventory', (() => {
       'Primary user UPN': record['Primary user UPN'] || record['Primary User UPN'] || record['User Principal Name'] || '',
       'IntuneGroup.GroupName': groupName,
       'IntuneGroup.GroupTag': groupTag,
-      'Total storage': storageRaw,
-      'Total storage (GB)': storageGb === null ? '' : Number(storageGb.toFixed(2)),
+      'Total storage (GB)': storageGb === null
+        ? (record['Total storage (GB)'] || record['Total Storage (GB)'] || '')
+        : Number(storageGb.toFixed(2)),
       'Warranty End Date': record['Warranty End Date'] || record['Warranty end date'] || '',
       'Warranty Start Date': record['Warranty Start Date'] || record['Warranty start date'] || '',
-      'Warranty Match Status': record['Warranty Match Status'] || 'Unmatched',
+      'Warranty Match Status': record['Warranty Match Status'] || '',
       'Duplicate Serial': record['Duplicate Serial'] === true,
       'Last check-in': record['Last check-in'] || record['Last Check-In'] || record['Last checkin'] || '',
       'Enrollment date': record['Enrollment date'] || record['Enrollment Date'] || '',
+      'OS version': record['OS version'] || record['OS Version'] || '',
+      'Azure AD registered': record['Azure AD registered'] || record['Azure AD Registered'] || '',
+      JoinType: record.JoinType || record['Join Type'] || record['Join type'] || '',
+      'Managed by': record['Managed by'] || record['Managed By'] || '',
+      'Device IP': record['Device IP'] || record['Management IP'] || record['Device IP Address'] || '',
       'IntuneGroup.SerialNumber': record['IntuneGroup.SerialNumber'] || serialFromRaw
     };
+    Object.defineProperty(coerced, IMPORT_SOURCE_VALUES, {
+      value: new Map(Object.entries(rawRow).map(([key, value]) => [normalizeHeader(key), value == null ? '' : String(value).trim()])),
+      enumerable: false
+    });
+    delete coerced['Total storage'];
+    delete coerced['Total Storage'];
+    return coerced;
   }
 
   function parseCsvText(text) {
@@ -518,16 +658,27 @@ App.registerModule('inventory', (() => {
   }
 
   function validateInventoryImportColumns(headerRow) {
-    const normalizedHeaders = headerRow.map((header) => normalizeHeader(header));
-    const databaseColumns = ['serial number', 'warranty start date', 'warranty end date', 'warranty match status', 'last check in'];
+    const normalizedHeaders = headerRow.map((header) => normalizeImportHeader(header));
+    const databaseColumns = new Set([...LAYOUT_COLUMNS, ...DEFAULT_COLUMNS, 'Primary user UPN', 'LOB', 'Ownership', 'Compliance', 'OS', 'Group Name', 'IntuneGroup.GroupName', 'Total storage', 'Total storage (GB)'].map(normalizeHeader));
     const recognized = [];
     const unrecognized = [];
     normalizedHeaders.forEach((header) => {
-      if (databaseColumns.includes(header)) recognized.push(header);
+      if (databaseColumns.has(header) && !['device online status', 'age'].includes(header)) recognized.push(header);
       else unrecognized.push(header);
     });
     const missingRequired = ['device name', 'serial number'].filter((key) => !normalizedHeaders.includes(key));
     return { recognized, unrecognized, missingRequired };
+  }
+
+  function normalizeImportHeader(header) {
+    const normalized = normalizeHeader(header);
+    const aliases = {
+      'intune groupname': 'intunegroup groupname',
+      'intune group groupname': 'intunegroup groupname',
+      'group tag': 'intunegroup grouptag',
+      'primary user upn': 'primary user upn'
+    };
+    return aliases[normalized] || normalized;
   }
 
   function parseInventoryCsv(text) {
@@ -562,16 +713,38 @@ App.registerModule('inventory', (() => {
   }
 
   const IMPORT_COLUMN_LABELS = {
+    'device id': 'Device ID',
+    'device name': 'Device name',
+    os: 'OS',
+    'primary user upn': 'Primary user UPN',
+    'intunegroup groupname': 'Intune GroupName',
+    'total storage': 'Total storage (GB)',
+    'total storage gb': 'Total storage (GB)',
+    lob: 'LOB',
+    model: 'Model',
+    'group tag': 'Group Tag',
+    'intunegroup grouptag': 'Group Tag',
+    manufacturer: 'Manufacturer',
     'serial number': 'Serial number',
+    'os version': 'OS Version',
+    'azure ad registered': 'Azure AD registered',
+    jointype: 'JoinType',
+    'join type': 'JoinType',
+    'enrollment date': 'Enrollment date',
+    'managed by': 'Managed by',
+    'device ip': 'Device IP',
+    'management ip': 'Device IP',
     'warranty start date': 'Warranty Start Date',
     'warranty end date': 'Warranty End Date',
     'warranty match status': 'Warranty Match Status',
     'last check in': 'Last check-in'
   };
 
-  function renderImportReport({ title, summaryLines = [], recognizedColumns = [], unrecognizedColumns = [] }) {
+  function renderImportReport({ title, summaryLines = [], recognizedColumns = [], unrecognizedColumns = [], selectableColumns = null }) {
     const summaryHtml = summaryLines.map((line) => `<p>${escapeHtml(line)}</p>`).join('');
-    const recognizedList = recognizedColumns.length
+    const recognizedList = selectableColumns
+      ? `<ul>${selectableColumns.map(({ key, label }) => `<li><label class="import-column-choice"><input type="checkbox" data-import-column="${escapeHtml(key)}" ${normalizeImportHeader(key) === 'serial number' ? 'checked disabled' : 'checked'}> ${escapeHtml(label)}${normalizeImportHeader(key) === 'serial number' ? ' (required)' : ''}</label></li>`).join('')}</ul>`
+      : recognizedColumns.length
       ? `<ul>${recognizedColumns.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul>`
       : `<p>No recognized columns found.</p>`;
     const unrecognizedList = unrecognizedColumns.length
@@ -584,6 +757,35 @@ App.registerModule('inventory', (() => {
         <div class="import-report-section"><strong style="color: var(--green);">Recognized columns (will be updated):</strong> ${recognizedList}</div>
         <div class="import-report-section"><strong style="color: var(--red);">Unrecognized columns:</strong> ${unrecognizedList}</div>
       </div>`;
+  }
+
+  function selectedImportRecord(record, selectedHeaders) {
+    const aliases = {
+      'Asset type': ['Asset type', 'Device type', 'Type'],
+      'Device name': ['Device name', 'Device Name', 'deviceName'],
+      'Serial number': ['Serial number', 'Serial Number', 'serialNumber', 'Serial'],
+      'Device ID': ['Device ID', 'DeviceId', 'deviceId', 'Device id'],
+      'Primary user email address': ['Primary user email address', 'Primary User Email Address', 'Primary user UPN', 'User Principal Name'],
+      'Primary user UPN': ['Primary user UPN', 'Primary User UPN', 'User Principal Name'],
+      'Primary user display name': ['Primary user display name', 'Primary User Display Name'],
+      'IntuneGroup.GroupName': ['IntuneGroup.GroupName', 'IntuneGroup.Group Name', 'Intune GroupName', 'Intune Group GroupName', 'Group Name'],
+      'IntuneGroup.GroupTag': ['IntuneGroup.GroupTag', 'Group tag', 'Group Tag', 'GroupTag'],
+      'Total storage (GB)': ['Total storage (GB)', 'Total Storage (GB)', 'Total storage'],
+      'IntuneGroup.SerialNumber': ['IntuneGroup.SerialNumber', 'Serial number', 'Serial Number', 'serialNumber', 'Serial']
+    };
+    const selected = new Set(selectedHeaders.map(normalizeImportHeader));
+    const filtered = {};
+    Object.entries(record).forEach(([field, value]) => {
+      if (field === 'Device Online Status' || field === 'Age' || field === 'Duplicate Serial') return;
+      const sourceHeaders = aliases[field] || [field];
+      if (sourceHeaders.some((header) => selected.has(normalizeImportHeader(header)))) filtered[field] = value;
+    });
+    const sourceValues = record[IMPORT_SOURCE_VALUES];
+    if (sourceValues instanceof Map) {
+      const filteredSourceValues = new Map(Array.from(sourceValues).filter(([header]) => selected.has(normalizeImportHeader(header))));
+      Object.defineProperty(filtered, IMPORT_SOURCE_VALUES, { value: filteredSourceValues, enumerable: false });
+    }
+    return filtered;
   }
 
   function validateWarrantyImportColumns(headerRow) {
@@ -670,17 +872,25 @@ App.registerModule('inventory', (() => {
     return `"${text.replace(/"/g, '""')}"`;
   }
 
-  function exportCurrentInventory() {
+  function exportCurrentInventory(includeAllColumns = false) {
     const rows = getInventory();
     const filteredRows = getFilteredRows(rows, App.countryFilter);
-    const columns = Array.from(new Set([...(DEFAULT_COLUMNS), ...filteredRows.flatMap((device) => Object.keys(device)), 'Warranty End Date', 'Warranty Start Date', 'Warranty Match Status']));
+    const allColumns = Array.from(new Set([...(DEFAULT_COLUMNS), 'Status', ...rows.flatMap((device) => Object.keys(device)), 'Warranty End Date', 'Warranty Start Date', 'Warranty Match Status']));
+    const columns = (includeAllColumns ? allColumns : getVisibleColumns())
+      .filter((column) => allColumns.includes(column))
+      .filter((column) => normalizeHeader(column) !== normalizeHeader('Total storage'))
+      .filter((column) => !['Status Label', 'Management IP', 'OS Version', 'Azure AD Registered', 'Join Type', 'Join type', 'Enrollment Date', 'Managed By', 'Device IP Address'].includes(column));
 
     const csvRows = [columns.map(escapeCsv).join(',')].concat(
-      filteredRows.map((device) => columns.map((column) => escapeCsv(column === 'Age'
-        ? getWarrantyAge(device['Warranty Start Date'], device['Warranty End Date'])
-        : column === 'Active device status'
-          ? getActiveDeviceStatus(device)
-          : device[column] ?? '')).join(','))
+      filteredRows.map((device) => columns.map((column) => escapeCsv(column === 'Status'
+        ? getMetaStatus(device)
+        : column === 'Total storage (GB)'
+        ? getTotalStorageGb(device)
+        : column === 'Age'
+        ? getWarrantyAge(getInventoryField(device, 'Warranty Start Date'), getInventoryField(device, 'Warranty End Date'))
+        : column === 'Device Online Status'
+          ? getDeviceOnlineStatus(device)
+          : getInventoryField(device, column))).join(','))
     );
 
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
@@ -691,6 +901,21 @@ App.registerModule('inventory', (() => {
     anchor.click();
     URL.revokeObjectURL(url);
     Toast.show('Inventory export generated.', 'success');
+  }
+
+  function promptInventoryExport() {
+    Modal.open({
+      title: 'Export inventory CSV',
+      confirmText: 'Export CSV',
+      body: `<p>Choose which columns to include. The current search and filters still determine which devices are exported.</p>
+        <label class="duplicate-choice"><input type="radio" name="inventoryExportColumns" value="active" checked> Active columns (currently visible)</label>
+        <label class="duplicate-choice"><input type="radio" name="inventoryExportColumns" value="all"> All columns in the inventory</label>`,
+      onConfirm: () => {
+        const all = document.querySelector('input[name="inventoryExportColumns"]:checked')?.value === 'all';
+        Modal.close();
+        exportCurrentInventory(all);
+      }
+    });
   }
 
   function downloadCsvTemplateFile(filename, headerRow, sampleRow) {
@@ -714,13 +939,14 @@ App.registerModule('inventory', (() => {
         label: 'Laptop inventory template',
         filename: 'nexit-csv-template-inventory.csv',
         headerRow: [
-          'Device ID', 'Device name', 'Serial number', 'Asset type', 'Ownership', 'Compliance', 'OS', 'OS version',
-          'Primary user display name', 'Primary user email address', 'Primary user UPN', 'Warranty Start Date', 'Warranty End Date',
-          'Manufacturer', 'Model', 'Location', 'Notes'
+          'Device ID', 'Device name', 'Serial number', 'Asset type', 'Status Label', 'Ownership', 'Compliance', 'OS', 'OS Version',
+          'Azure AD registered', 'JoinType', 'Enrollment date', 'Managed by', 'Primary user display name', 'Primary user email address',
+          'Primary user UPN', 'Warranty Start Date', 'Warranty End Date', 'Manufacturer', 'Model', 'Location', 'Device IP', 'Notes'
         ],
         sampleRow: [
-          'INT-1001', 'LAP-SG-001', 'SG-1001', 'laptop', 'Corporate', 'Compliant', 'Windows 11', '23H2',
-          '', 'alex.ng@contoso.com', 'alex.ng@contoso.com', '', '', 'Dell', 'Latitude 5440', '', ''
+          'INT-1001', 'LAP-SG-001', 'SG-1001', 'laptop', 'Ready to Deploy', 'Corporate', 'Compliant', 'Windows 11', '23H2',
+          'Yes', 'Azure AD joined', '2024-01-15', 'MDM', '', 'alex.ng@contoso.com', 'alex.ng@contoso.com', '', '',
+          'Dell', 'Latitude 5440', 'Singapore', '', ''
         ]
       },
       {
@@ -769,6 +995,7 @@ App.registerModule('inventory', (() => {
     });
     const checkout = getCurrentCheckout(device);
     const primaryUser = getPrimaryUser(device);
+    parts.push(`status ${getMetaStatus(device)} label ${getStatusLabelName(device)} ${getStatusLabelType(device)}`.toLowerCase());
     if (checkout || primaryUser) {
       const custodian = checkout || primaryUser;
       parts.push(`checked out ${custodian['Staff name'] || custodian.name} ${custodian['Staff email'] || custodian.email} ${checkout?.['Expected return date'] || ''}`);
@@ -790,7 +1017,9 @@ App.registerModule('inventory', (() => {
       const matchesCountry = countryFilter === 'all' || getCountryCodeFromDeviceName(device['Device name']) === countryFilter;
       const matchesDashboard = dashboardRecordIndexes === null || dashboardRecordIndexes.has(rows.indexOf(device));
       const matchesDeviceType = !activeDeviceType || getAssetType(device) === activeDeviceType;
-      return matchesSearch && matchesWarranty && matchesCountry && matchesDashboard && matchesDeviceType && (!duplicatesOnly || device['Duplicate Serial'] === true);
+      const isArchived = getStatusLabelType(device) === 'Archived';
+      const matchesArchiveView = archivedView ? isArchived : !isArchived;
+      return matchesSearch && matchesWarranty && matchesCountry && matchesDashboard && matchesDeviceType && matchesArchiveView && (!duplicatesOnly || device['Duplicate Serial'] === true);
     });
   }
 
@@ -835,6 +1064,10 @@ App.registerModule('inventory', (() => {
     }
     const currentCheckout = getCurrentCheckout(device);
     const primaryUser = getPrimaryUser(device);
+    if (eventType === 'checkout' && getStatusLabelType(device) !== 'Deployable') {
+      Toast.show(`This asset cannot be checked out while its status is ${getStatusLabelName(device)}.`, 'warning');
+      return;
+    }
     if (eventType === 'checkout' && currentCheckout) {
       Toast.show('This device is already checked out.', 'warning');
       return;
@@ -980,7 +1213,7 @@ App.registerModule('inventory', (() => {
 
   function renderTableBody(rows, allRows) {
     const visibleColumns = getVisibleColumns();
-    const allColumns = LAYOUT_COLUMNS;
+    const allColumns = getOrderedLayoutColumns();
     if (!rows.length) return `<tr><td colspan="${allColumns.length + 2}" class="empty-state">No matching devices.</td></tr>`;
     return rows.map((device) => {
       const duplicate = device['Duplicate Serial'] === true;
@@ -990,10 +1223,19 @@ App.registerModule('inventory', (() => {
       const checkout = getCurrentCheckout(device);
       const primaryUser = getPrimaryUser(device);
       const hasAssignedUser = Boolean(checkout || primaryUser);
+      const deployable = getStatusLabelType(device) === 'Deployable';
       const assetKey = getAssetKey(device);
       const hasCheckoutHistory = assetKey && getCheckoutIndexes().assetKeys.has(assetKey);
+      const lastEvent = assetKey ? getCheckoutIndexes().lastEvent?.get(assetKey) : null;
+      const alreadyCheckedIn = !hasAssignedUser && lastEvent?.['Event type'] === 'checkin';
       const cells = allColumns.map((col) => {
-        const value = REPLACEMENT_COLUMNS.includes(col)
+        const value = col === 'Status'
+          ? getMetaStatus(device)
+          : col === 'Total storage (GB)'
+          ? getTotalStorageGb(device)
+          : col === 'Replacement Status'
+          ? getInventoryField(device, col) || replacement[col]
+          : REPLACEMENT_COLUMNS.includes(col)
           ? replacement[col]
           : col === 'Custody Status'
           ? hasAssignedUser ? 'Checked out' : assetKey ? 'Available' : 'Untracked'
@@ -1007,10 +1249,19 @@ App.registerModule('inventory', (() => {
                 : ''
               : col === 'Expected Return Date'
                 ? checkout?.['Expected return date'] || ''
-                : device[col] ?? '';
+                : getInventoryField(device, col);
+        if (col === 'Warranty Start Date' || col === 'Warranty End Date') {
+          return `<td>${escapeHtml(dateInputValue(value) || '—')}</td>`;
+        }
         if (col === 'Custody Status') {
           const badgeClass = hasAssignedUser ? 'badge-blue' : assetKey ? 'badge-green' : 'badge-gray';
           return `<td><span class="badge ${badgeClass}">${escapeHtml(value)}</span></td>`;
+        }
+        if (col === 'Status') {
+          const metaStatus = getMetaStatus(device);
+          const labelType = getStatusLabelType(device);
+          const badgeClass = metaStatus === 'Deployed' ? 'badge-blue' : labelType === 'Deployable' ? 'badge-green' : labelType === 'Pending' ? 'badge-orange' : labelType === 'Archived' ? 'badge-gray' : 'badge-red';
+          return `<td><span class="badge ${badgeClass}">${escapeHtml(metaStatus)}</span></td>`;
         }
         if (col === 'Expected Return Date') {
           if (!value) return '<td>—</td>';
@@ -1021,7 +1272,7 @@ App.registerModule('inventory', (() => {
           const badgeClass = status === 'Replaced' ? 'badge-orange' : status === 'Not replaced' ? 'badge-gray' : 'badge-gray';
           return `<td><span class="badge ${badgeClass}">${escapeHtml(status)}</span></td>`;
         }
-        if (col === 'Handover Eligibility' || col === 'Lifecycle Status') {
+        if (col === 'Lifecycle Status') {
           return `<td>${value ? `<span class="badge ${value === 'Recycle' || value === 'Un-deployable' || value === 'Disposed' ? 'badge-red' : value === 'Pending Assessment' ? 'badge-orange' : 'badge-green'}">${escapeHtml(value)}</span>` : '—'}</td>`;
         }
         if (col === 'Warranty Match Status') {
@@ -1034,13 +1285,13 @@ App.registerModule('inventory', (() => {
           const badgeClass = status === 'Compliant' ? 'badge-green' : status === 'Non-Compliant' ? 'badge-red' : 'badge-gray';
           return `<td><span class="badge ${badgeClass}">${escapeHtml(status)}</span></td>`;
         }
-        if (col === 'Active device status') {
-          const status = getActiveDeviceStatus(device);
-          const badgeClass = status === 'Inactive' ? 'badge-red' : 'badge-green';
+        if (col === 'Device Online Status') {
+          const status = getDeviceOnlineStatus(device);
+          const badgeClass = status === 'Inactive>90days' ? 'badge-red' : status === 'Unknown' ? 'badge-gray' : 'badge-green';
           return `<td><span class="badge ${badgeClass}">${escapeHtml(status)}</span></td>`;
         }
         if (col === 'Age') {
-          const age = getWarrantyAge(device['Warranty Start Date'], device['Warranty End Date']);
+          const age = getWarrantyAge(getInventoryField(device, 'Warranty Start Date'), getInventoryField(device, 'Warranty End Date'));
           return `<td>${escapeHtml(age)}</td>`;
         }
         if (col === 'Total storage (GB)') return `<td>${escapeHtml(formatGb(value))}</td>`;
@@ -1049,42 +1300,48 @@ App.registerModule('inventory', (() => {
         return `<td>${escapeHtml(value || '—')}</td>`;
       }).join('');
       const rowClasses = [duplicate ? 'inventory-duplicate' : '', selected ? 'inventory-selected' : ''].filter(Boolean).join(' ');
-      return `<tr class="${rowClasses}"><td><input type="checkbox" class="device-select-checkbox" data-index="${index}" aria-label="Select ${escapeHtml(device['Device name'] || 'device')}" ${selected ? 'checked' : ''}></td>${cells}<td class="inventory-row-actions"><button class="btn btn-primary btn-sm checkout-device-btn" data-index="${index}" ${hasAssignedUser || !assetKey ? 'disabled' : ''}>Checkout</button><button class="btn btn-secondary btn-sm checkin-device-btn" data-index="${index}" ${hasAssignedUser ? '' : 'disabled'}${primaryUser && !checkout ? ` title="Check in to clear the Primary user assignment for this device"` : ''}>Check in</button><button class="btn btn-secondary btn-sm checkout-history-btn" data-index="${index}" ${hasCheckoutHistory ? '' : 'disabled'}>History</button></td></tr>`;
+      return `<tr class="${rowClasses}"><td><input type="checkbox" class="device-select-checkbox" data-index="${index}" aria-label="Select ${escapeHtml(device['Device name'] || 'device')}" ${selected ? 'checked' : ''}></td>${cells}<td class="inventory-row-actions"><button class="btn btn-primary btn-sm checkout-device-btn" data-index="${index}" ${hasAssignedUser || !assetKey || !deployable ? 'disabled' : ''}>${hasAssignedUser ? 'Checked out' : 'Checkout'}</button><button class="btn btn-secondary btn-sm checkin-device-btn" data-index="${index}" ${hasAssignedUser ? '' : 'disabled'}${primaryUser && !checkout ? ` title="Check in to clear the Primary user assignment for this device"` : ''}>${alreadyCheckedIn ? 'Checked in' : 'Check in'}</button><button class="btn btn-secondary btn-sm checkout-history-btn" data-index="${index}" ${hasCheckoutHistory ? '' : 'disabled'}>History</button></td></tr>`;
     }).join('');
   }
 
   function renderLayoutControls() {
     const layout = getVisibleColumns();
     const available = LAYOUT_COLUMNS;
-    const activeColumns = available.filter((column) => layout.includes(column));
+    const activeColumns = layout.filter((column) => available.includes(column));
     const inactiveColumns = available.filter((column) => !layout.includes(column));
     const labelForColumn = (column) => column === 'IntuneGroup.GroupTag'
       ? 'Group tag'
-      : column === 'Asset type' ? 'Device type'
-        : column === 'Handover Eligibility' ? 'Deployment Status' : column;
+      : column === 'Asset type' ? 'Category'
+        : column === 'IntuneGroup.GroupName' ? 'INTUNE.GROUPNAME'
+        : column === 'OS version' ? 'OS Version'
+        : column;
+    const item = (column, visible) => {
+      const label = labelForColumn(column);
+      const position = activeColumns.indexOf(column) + 1;
+      const hiddenBySearch = !label.toLowerCase().includes(columnSearchTerm.trim().toLowerCase());
+      return `<div class="column-picker-row" data-column-row data-search="${escapeHtml(label.toLowerCase())}" ${hiddenBySearch ? 'hidden' : ''}>
+        <label><input type="checkbox" data-column="${escapeHtml(column)}" ${visible ? 'checked' : ''}><span>${escapeHtml(label)}</span></label>
+        ${visible ? `<input class="column-order-input" type="number" min="1" max="${activeColumns.length}" value="${position}" data-column-order="${escapeHtml(column)}" aria-label="Order for ${escapeHtml(label)}">` : ''}
+      </div>`;
+    };
 
     return `
       <div class="layout-controls">
-        <div class="active-layout-columns" aria-label="Visible columns">
-          ${activeColumns.map((column) => `
-            <label class="active-layout-option">
-              <input type="checkbox" data-column="${escapeHtml(column)}" checked />
-              <span>${escapeHtml(labelForColumn(column))}</span>
-            </label>
-          `).join('')}
-        </div>
-        <details class="inactive-layout-dropdown">
-          <summary class="btn btn-secondary btn-sm">More columns${inactiveColumns.length ? ` (${inactiveColumns.length})` : ''}</summary>
-          <div class="inactive-layout-menu" aria-label="Hidden columns">
-            ${inactiveColumns.map((column) => `
-              <label class="inactive-layout-option">
-                <input type="checkbox" data-column="${escapeHtml(column)}" />
-                <span>${escapeHtml(labelForColumn(column))}</span>
-              </label>
-            `).join('')}
-          </div>
-        </details>
-        <button class="btn btn-secondary btn-sm" id="resetLayoutBtn">Reset layout</button>
+        <button class="btn btn-secondary btn-sm" id="columnLayoutToggle" aria-expanded="${columnDrawerOpen}">☷ Columns</button>
+        <div class="column-drawer-backdrop ${columnDrawerOpen ? 'open' : ''}" id="columnDrawerBackdrop"></div>
+        <aside class="column-drawer ${columnDrawerOpen ? 'open' : ''}" id="columnDrawer" aria-label="Column layout" aria-hidden="${!columnDrawerOpen}">
+          <div class="column-drawer-header"><div><strong>Column layout</strong><small>Choose visible columns and set their order.</small></div><button type="button" class="btn btn-secondary btn-sm" id="closeColumnDrawer" aria-label="Close column layout">×</button></div>
+          <input class="form-control column-search" type="search" id="columnSearch" placeholder="Search columns..." value="${escapeHtml(columnSearchTerm)}" />
+          <details class="column-picker-section" data-column-section open>
+            <summary>Visible columns <span>${activeColumns.length}</span></summary>
+            <div class="column-picker-list">${activeColumns.map((column) => item(column, true)).join('')}</div>
+          </details>
+          <details class="column-picker-section" data-column-section open>
+            <summary>Hidden columns <span>${inactiveColumns.length}</span></summary>
+            <div class="column-picker-list">${inactiveColumns.map((column) => item(column, false)).join('') || '<p class="column-picker-empty">All columns are visible.</p>'}</div>
+          </details>
+          <div class="column-drawer-footer"><button type="button" class="btn btn-secondary btn-sm" id="resetLayoutBtn">Reset defaults</button></div>
+        </aside>
       </div>
     `;
   }
@@ -1092,13 +1349,15 @@ App.registerModule('inventory', (() => {
   function refreshLayoutControls(container) {
     const controls = container.querySelector('.layout-controls');
     if (!controls) return;
-    const dropdownWasOpen = controls.querySelector('.inactive-layout-dropdown')?.open || false;
     const template = document.createElement('template');
     template.innerHTML = renderLayoutControls();
     controls.replaceChildren(...template.content.firstElementChild.childNodes);
-    const dropdown = controls.querySelector('.inactive-layout-dropdown');
-    if (dropdown) dropdown.open = dropdownWasOpen;
     bindLayoutControlEvents(container);
+  }
+
+  function getOrderedLayoutColumns() {
+    const visible = getVisibleColumns();
+    return [...visible, ...LAYOUT_COLUMNS.filter((column) => !visible.includes(column))];
   }
 
   function applyColumnVisibility(container, columns = getVisibleColumns()) {
@@ -1111,14 +1370,15 @@ App.registerModule('inventory', (() => {
   }
 
   function decorateTableColumns(container) {
+    const orderedColumns = getOrderedLayoutColumns();
     const headerCells = container.querySelectorAll('.inventory-table thead tr:first-child > th');
-    LAYOUT_COLUMNS.forEach((column, index) => {
+    orderedColumns.forEach((column, index) => {
       headerCells[index + 1]?.setAttribute('data-layout-column', column);
     });
 
     container.querySelectorAll('.inventory-table tbody tr').forEach((row) => {
       if (row.querySelector('.empty-state')) return;
-      LAYOUT_COLUMNS.forEach((column, index) => {
+      orderedColumns.forEach((column, index) => {
         row.children[index + 1]?.setAttribute('data-layout-column', column);
       });
     });
@@ -1129,19 +1389,52 @@ App.registerModule('inventory', (() => {
   function bindLayoutControlEvents(container) {
     const layoutControls = container.querySelector('.layout-controls');
     if (!layoutControls) return;
+    const toggleDrawer = (open) => {
+      columnDrawerOpen = open;
+      refreshLayoutControls(container);
+    };
+    layoutControls.querySelector('#columnLayoutToggle').addEventListener('click', () => toggleDrawer(true));
+    layoutControls.querySelector('#closeColumnDrawer').addEventListener('click', () => toggleDrawer(false));
+    layoutControls.querySelector('#columnDrawerBackdrop').addEventListener('click', () => toggleDrawer(false));
+    layoutControls.querySelector('#columnSearch').addEventListener('input', (event) => {
+      columnSearchTerm = event.target.value;
+      const term = columnSearchTerm.trim().toLowerCase();
+      layoutControls.querySelectorAll('[data-column-row]').forEach((row) => {
+        row.hidden = !row.dataset.search.includes(term);
+      });
+      if (term) {
+        layoutControls.querySelectorAll('.column-picker-section').forEach((section) => {
+          if (section.querySelector('[data-column-row]:not([hidden])')) section.open = true;
+        });
+      }
+    });
     layoutControls.querySelector('#resetLayoutBtn').addEventListener('click', () => {
       saveVisibleColumns(DEFAULT_VISIBLE_COLUMNS);
-      applyColumnVisibility(container, DEFAULT_VISIBLE_COLUMNS);
-      refreshLayoutControls(container);
+      render(container, App.countryFilter);
     });
     layoutControls.querySelectorAll('input[data-column]').forEach((checkbox) => {
       checkbox.addEventListener('change', () => {
-        const selected = Array.from(layoutControls.querySelectorAll('input[data-column]:checked'))
-          .map((input) => input.dataset.column);
-        const visibleColumns = selected.length ? selected : ['Device name'];
+        const visibleColumns = getVisibleColumns();
+        const selected = checkbox.dataset.column;
+        const next = checkbox.checked
+          ? [...visibleColumns, selected]
+          : visibleColumns.filter((column) => column !== selected);
+        if (!next.length) next.push('Device name');
+        saveVisibleColumns(next);
+        render(container, App.countryFilter);
+      });
+    });
+    layoutControls.querySelectorAll('input[data-column-order]').forEach((input) => {
+      input.addEventListener('change', () => {
+        const visibleColumns = getVisibleColumns();
+        const column = input.dataset.columnOrder;
+        const oldIndex = visibleColumns.indexOf(column);
+        if (oldIndex < 0) return;
+        const requested = Math.max(1, Math.min(visibleColumns.length, Number(input.value) || oldIndex + 1)) - 1;
+        visibleColumns.splice(oldIndex, 1);
+        visibleColumns.splice(requested, 0, column);
         saveVisibleColumns(visibleColumns);
-        applyColumnVisibility(container, visibleColumns);
-        refreshLayoutControls(container);
+        render(container, App.countryFilter);
       });
     });
   }
@@ -1185,7 +1478,7 @@ App.registerModule('inventory', (() => {
         return !importedKeys.has(key) || canonicalByKey.get(key) === device;
       });
       canonicalByKey.forEach((device, key) => {
-        const serial = String(device['Serial number'] || device['IntuneGroup.SerialNumber'] || '').replace(/--\d+$/, '');
+        const serial = String(device['Serial number'] || device['IntuneGroup.SerialNumber'] || '').replace(/--?\d+$/, '');
         device['Serial number'] = serial;
         device['IntuneGroup.SerialNumber'] = serial;
         device['Duplicate Serial'] = false;
@@ -1212,24 +1505,36 @@ App.registerModule('inventory', (() => {
       const match = key ? bySerial.get(key) : null;
 
       if (match && !keepDuplicates) {
-        const mergedRecord = { ...match, ...record };
-        ['Warranty Start Date', 'Warranty End Date'].forEach((field) => {
-          if (!record[field]) mergedRecord[field] = match[field] || '';
+        const mergedRecord = { ...match };
+        Object.entries(record).forEach(([field, value]) => {
+          if (field === 'Duplicate Serial' || field === 'Device Online Status' || field === 'Age' || !hasImportValue(value)) return;
+          if (field === 'Asset type' && !hasImportedSourceValue(record, 'Asset type', 'Device type', 'Type')) return;
+          if (field === 'Device name' && !hasImportedSourceValue(record, 'Device name', 'Device Name', 'deviceName')) return;
+          if (field === 'Device ID' && ['n/a', 'na', 'none', 'unknown', '-'].includes(String(value).trim().toLowerCase())) return;
+          mergedRecord[field] = value;
         });
-        if (!record['Warranty Match Status']) mergedRecord['Warranty Match Status'] = match['Warranty Match Status'] || 'Unmatched';
+        delete mergedRecord['Total storage'];
+        delete mergedRecord['Total Storage'];
         Object.assign(match, mergedRecord, { 'Duplicate Serial': false });
         merged += 1;
         return;
       }
 
-      const addedRecord = { ...record, 'Duplicate Serial': false };
+      const addedRecord = {
+        ...record,
+        'Device name': hasImportValue(record['Device name']) ? record['Device name'] : 'Unknown Device',
+        'Warranty Match Status': hasImportValue(record['Warranty Match Status']) ? record['Warranty Match Status'] : 'Unmatched',
+        'Duplicate Serial': false
+      };
+      delete addedRecord['Device Online Status'];
+      delete addedRecord.Age;
       if (match && keepDuplicates) {
-        const baseSerial = sourceSerial.replace(/--\d+$/, '');
+        const baseSerial = sourceSerial.replace(/--?\d+$/, '');
         let suffix = 1;
-        let candidate = `${baseSerial}--${suffix}`;
+        let candidate = `${baseSerial}-${suffix}`;
         while (occupiedSerials.has(normalizeSerial(candidate))) {
           suffix += 1;
-          candidate = `${baseSerial}--${suffix}`;
+          candidate = `${baseSerial}-${suffix}`;
         }
         addedRecord['Serial number'] = candidate;
         addedRecord['IntuneGroup.SerialNumber'] = candidate;
@@ -1251,21 +1556,24 @@ App.registerModule('inventory', (() => {
   const EDITABLE_FIELDS = [
     ['Fixed Asset Number', 'Fixed Asset Number'], ['Device ID', 'Device ID'], ['Device name', 'Device name'], ['Serial number', 'Serial number'],
     ['Manufacturer', 'Manufacturer'], ['Model', 'Model'], ['Ownership', 'Ownership'],
-    ['Location', 'Location'], ['Management IP', 'Management IP'], ['Firmware version', 'Firmware version'],
+    ['Location', 'Location'], ['Device IP', 'Device IP'], ['Firmware version', 'Firmware version'],
     ['UPS Capacity (VA)', 'UPS Capacity (VA)'], ['Battery replacement date', 'Battery replacement date'],
-    ['Compliance', 'Compliance'], ['OS', 'OS'], ['OS version', 'OS version'],
+    ['Compliance', 'Compliance'], ['OS', 'OS'], ['OS version', 'OS Version'], ['Azure AD registered', 'Azure AD registered'],
+    ['JoinType', 'JoinType'], ['Managed by', 'Managed by'],
     ['Primary user display name', 'Primary user display name'], ['Primary user email address', 'Primary user email address'],
     ['IntuneGroup.GroupName', 'Group name'], ['IntuneGroup.GroupTag', 'Group tag'],
-    ['Total storage', 'Total storage (bytes)'], ['Free storage', 'Free storage (bytes)'],
+    ['Total storage (GB)', 'Total storage (GB)'], ['Free storage', 'Free storage (bytes)'],
     ['Last check-in', 'Last check-in'], ['Enrollment date', 'Enrollment date'],
-    ['Warranty Start Date', 'Warranty Start Date'], ['Warranty End Date', 'Warranty End Date']
+    ['Warranty Start Date', 'Warranty Start Date'], ['Warranty End Date', 'Warranty End Date'],
+    ['Device Online Status', 'Device Online Status']
   ];
 
   const BULK_EDIT_FIELDS = [
     ['Asset type', 'Device type'],
     ...DEFAULT_COLUMNS.filter((column) => column !== 'Asset type').map((column) => [column, column]),
     ...CHECKOUT_COLUMNS.map((column) => [column, column]),
-    ...REPLACEMENT_COLUMNS.map((column) => [column, column])
+    ...REPLACEMENT_COLUMNS.map((column) => [column, column]),
+    ['Staff Member Lifecycle Status', 'Staff Member Lifecycle Status']
   ];
 
   function applyBulkEdit(container, country) {
@@ -1279,16 +1587,88 @@ App.registerModule('inventory', (() => {
       confirmText: 'Apply changes',
       size: 'lg',
       body: `<p>Current values are shown. For multiple devices, fields with different values are left unchanged unless you edit them.</p><form id="bulkEditForm" class="bulk-edit-form">${BULK_EDIT_FIELDS.map(([key, label]) => {
-        const values = selectedDevices.map((device) => String(key === 'Asset type' ? getAssetType(device) : device[key] ?? ''));
+        const values = selectedDevices.map((device) => String(key === 'Asset type'
+          ? getAssetType(device)
+          : key === 'Total storage (GB)'
+            ? getTotalStorageGb(device) ?? ''
+          : key === 'Status Label'
+            ? getStatusLabelName(device)
+          : key === 'Replacement Status'
+            ? getInventoryField(device, key) || App.modules.replacements?.summaryForSerial?.(getInventoryField(device, 'Serial number'))?.['Replacement Status'] || 'Not replaced'
+          : key === 'Replaced By Device Serial Number'
+            ? getInventoryField(device, key) || App.modules.replacements?.summaryForSerial?.(getInventoryField(device, 'Serial number'))?.['Replaced By Device Serial Number'] || ''
+          : key === 'Staff Member Lifecycle Status'
+            ? getInventoryField(device, key)
+            : key === 'Device Online Status'
+              ? getDeviceOnlineStatus(device)
+              : key === 'Age'
+                ? getWarrantyAge(getInventoryField(device, 'Warranty Start Date'), getInventoryField(device, 'Warranty End Date'))
+                : ['Warranty Start Date', 'Warranty End Date'].includes(key)
+                  ? dateInputValue(getInventoryField(device, key))
+                  : getInventoryField(device, key)));
         const mixed = values.some((value) => value !== values[0]);
-        const value = mixed ? '' : values[0];
+        const rawValue = mixed ? '' : values[0];
+        const value = !mixed && ['Warranty Start Date', 'Warranty End Date'].includes(key) ? dateInputValue(rawValue) : rawValue;
         const mixedAttributes = mixed ? ' data-mixed="true"' : '';
-        const control = key === 'Asset type'
+        const enumOptions = App.fieldOptions?.[key];
+        const control = key === 'Replaced By Device Serial Number'
+          ? `<div class="inventory-replacement-picker"><input class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}" value="${escapeHtml(value)}" data-inventory-device-picker="true" data-initial-value="${escapeHtml(value)}" data-mixed="${mixed}" placeholder="${mixed ? 'Multiple values · choose a device' : 'Search available inventory'}"><div class="replacement-suggestions" data-inventory-device-suggestions role="listbox"></div><span class="replacement-field-message" data-inventory-device-message aria-live="polite"></span></div>`
+          : enumOptions
+          ? `<select class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}"${mixedAttributes}>${mixed ? '<option value="" selected>Multiple values</option>' : '<option value="">Select a value</option>'}${enumOptions.map((option) => `<option value="${escapeHtml(option.value)}" ${value === option.value ? 'selected' : ''}>${escapeHtml(option.value)}${option.legacy ? ' · legacy' : ''}</option>`).join('')}</select>`
+          : key === 'Asset type'
           ? `<select class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}"${mixedAttributes}>${mixed ? '<option value="" selected>Multiple values</option>' : ''}${DEVICE_TYPES.map(({ value: type, label: typeLabel }) => `<option value="${type}" ${value === type ? 'selected' : ''}>${escapeHtml(typeLabel)}</option>`).join('')}</select>`
-          : `<input class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}" value="${escapeHtml(value)}"${mixed ? ' placeholder="Multiple values" data-mixed="true"' : ''}${!mixed && (key === 'Warranty Start Date' || key === 'Warranty End Date') ? ' type="date"' : ''}>`;
+          : key === 'Device Online Status'
+            ? `<select class="form-control" name="value:${escapeHtml(key)}" data-online-status="true" aria-label="${escapeHtml(label)}"${mixedAttributes}>${mixed ? '<option value="" selected>Multiple values</option>' : ''}${['Active', 'Inactive>90days', 'Unknown'].map((status) => `<option value="${escapeHtml(status)}" ${value === status ? 'selected' : ''}>${escapeHtml(status)}</option>`).join('')}</select>`
+          : key === 'Status Label'
+            ? `<select class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}"${mixedAttributes}>${mixed ? '<option value="" selected>Multiple values</option>' : ''}${getStatusLabels().map((statusLabel) => `<option value="${escapeHtml(statusLabel.name)}" ${value === statusLabel.name ? 'selected' : ''}>${escapeHtml(statusLabel.name)} · ${escapeHtml(statusLabel.type)}</option>`).join('')}</select>`
+          : `<input class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}" value="${escapeHtml(value)}"${key === 'Age' ? ' readonly' : ''}${key === 'Total storage (GB)' ? ' type="number" min="0" step="0.01"' : ''}${mixed ? ' placeholder="Multiple values" data-mixed="true"' : ''}${!mixed && ['Warranty Start Date', 'Warranty End Date'].includes(key) ? ' placeholder="dd-mmm-yyyy"' : ''}>`;
         return `<label class="bulk-edit-field"><span>${escapeHtml(label)}</span>${control}</label>`;
       }).join('')}</form>`,
       onOpen: () => {
+        document.querySelectorAll('#bulkEditForm [data-inventory-device-picker="true"]').forEach((input) => {
+          const suggestions = input.parentElement.querySelector('[data-inventory-device-suggestions]');
+          const message = input.parentElement.querySelector('[data-inventory-device-message]');
+          let searchTimer = null;
+          input.addEventListener('input', () => {
+            input.dataset.edited = 'true';
+            if (input.value.trim() === input.dataset.initialValue) {
+              input.dataset.selectedSerial = input.value.trim();
+              suggestions.replaceChildren();
+              message.textContent = '';
+              return;
+            }
+            input.dataset.selectedSerial = '';
+            clearTimeout(searchTimer);
+            const query = input.value.trim();
+            suggestions.replaceChildren();
+            message.textContent = query ? 'Searching available inventory…' : '';
+            if (!query) return;
+            searchTimer = setTimeout(async () => {
+              try {
+                const excluded = selectedDevices.map((device) => getInventoryField(device, 'Serial number') || device['IntuneGroup.SerialNumber']).filter(Boolean).join('|');
+                const response = await fetch(`/api/inventory/available-replacements?q=${encodeURIComponent(query)}&exclude=${encodeURIComponent(excluded)}`);
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Inventory search failed.');
+                if (input.value.trim() !== query) return;
+                const matches = result.devices || [];
+                suggestions.innerHTML = matches.map((device) => `<button type="button" class="replacement-suggestion" role="option" data-device-serial="${escapeHtml(device.serial)}"><strong>${escapeHtml(device.serial)}</strong><small>${escapeHtml([device.model, device.country, device.fixedAssetNumber].filter(Boolean).join(' · '))}</small></button>`).join('');
+                suggestions.querySelectorAll('[data-device-serial]').forEach((button) => button.addEventListener('click', () => {
+                  input.value = button.dataset.deviceSerial;
+                  input.dataset.selectedSerial = button.dataset.deviceSerial;
+                  input.dataset.edited = 'true';
+                  suggestions.replaceChildren();
+                  message.textContent = 'Available for handout.';
+                }));
+                message.textContent = matches.length ? 'Select a device from inventory.' : 'No available replacement device matches this search.';
+              } catch (error) {
+                message.textContent = error.message || 'Inventory search failed.';
+              }
+            }, 250);
+          });
+        });
+        document.querySelectorAll('#bulkEditForm select[data-online-status="true"]').forEach((select) => {
+          select.addEventListener('change', () => { select.dataset.edited = 'true'; });
+        });
         document.querySelectorAll('#bulkEditForm input[data-mixed="true"]').forEach((input) => {
           input.addEventListener('input', () => {
             input.dataset.edited = 'true';
@@ -1303,15 +1683,31 @@ App.registerModule('inventory', (() => {
       onConfirm: () => {
         const form = document.getElementById('bulkEditForm');
         const formData = new FormData(form);
+        const replacementPicker = form.querySelector('[data-inventory-device-picker="true"]');
+        if (replacementPicker && replacementPicker.dataset.edited === 'true' && selectedDevices.length > 1) {
+          Toast.show('Edit the replacement-device link one device at a time.', 'error');
+          replacementPicker.focus();
+          return;
+        }
+        if (replacementPicker && replacementPicker.dataset.edited === 'true'
+            && replacementPicker.value.trim() !== replacementPicker.dataset.selectedSerial) {
+          Toast.show('Choose an available replacement device from the inventory suggestions.', 'error');
+          replacementPicker.focus();
+          return;
+        }
         const updatedDevices = [];
         indexes.forEach((index) => {
           const updated = { ...inventory[index] };
           BULK_EDIT_FIELDS.forEach(([field]) => {
             const input = form.elements.namedItem(`value:${field}`);
+            if (field === 'Device Online Status' && input.dataset.edited !== 'true') return;
+            if (field === 'Age') return;
             if (input.dataset.mixed === 'true' && input.dataset.edited !== 'true') return;
             const value = String(formData.get(`value:${field}`) ?? '').trim();
             updated[field] = field === 'Asset type' ? normalizeDeviceType(value) : value;
           });
+          delete updated['Total storage'];
+          delete updated['Total Storage'];
           updatedDevices.push(updated);
           inventory[index] = updated;
         });
@@ -1367,14 +1763,57 @@ App.registerModule('inventory', (() => {
       size: 'lg',
       body: `<form id="deviceForm" class="device-form">
         <label class="device-form-field"><span>Device type</span><select class="form-control" name="Asset type">${DEVICE_TYPES.map(({ value, label }) => `<option value="${value}" ${selectedType === value ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label>
-        ${EDITABLE_FIELDS.map(([key, label]) => `<label class="device-form-field"><span${key === 'Fixed Asset Number' ? ` title="${escapeHtml(FIXED_ASSET_NUMBER_HELP)}"` : ''}>${escapeHtml(label)}</span><input class="form-control" name="${escapeHtml(key)}" value="${escapeHtml(device[key] || '')}" ${key === 'Device name' || key === 'Serial number' ? 'required' : ''}${key === 'Warranty Start Date' || key === 'Warranty End Date' ? ' type="date"' : ''}></label>`).join('')}
+        ${EDITABLE_FIELDS.filter(([key]) => !['Primary user display name', 'Primary user email address'].includes(key)).map(([key, label]) => {
+          const currentValue = key === 'Device Online Status' ? getDeviceOnlineStatus(device)
+            : key === 'Total storage (GB)' ? getTotalStorageGb(device) ?? ''
+              : getInventoryField(device, key);
+          const value = ['Warranty Start Date', 'Warranty End Date'].includes(key) ? dateInputValue(currentValue) : currentValue;
+          const control = key === 'Device Online Status'
+            ? `<select class="form-control" name="${escapeHtml(key)}" data-online-status="true">${['Active', 'Inactive>90days', 'Unknown'].map((status) => `<option value="${escapeHtml(status)}" ${value === status ? 'selected' : ''}>${escapeHtml(status)}</option>`).join('')}</select>`
+            : `<input class="form-control" name="${escapeHtml(key)}" value="${escapeHtml(value)}" ${key === 'Device name' || key === 'Serial number' ? 'required' : ''}${key === 'Total storage (GB)' ? ' type="number" min="0" step="0.01"' : ''}${['Warranty Start Date', 'Warranty End Date'].includes(key) ? ' placeholder="dd-mmm-yyyy"' : ''}>`;
+          return `<label class="device-form-field"><span${key === 'Fixed Asset Number' ? ` title="${escapeHtml(FIXED_ASSET_NUMBER_HELP)}"` : ''}>${escapeHtml(label)}</span>${control}</label>`;
+        }).join('')}
+        <label class="device-form-field"><span>Status Label</span><select class="form-control" name="Status Label">${getStatusLabels().map((label) => `<option value="${escapeHtml(label.name)}" ${((device['Status Label'] || (getCurrentCheckout(device) || getPrimaryUser(device) ? 'Deployed' : 'Ready to Deploy')) === label.name) ? 'selected' : ''}>${escapeHtml(label.name)} · ${escapeHtml(label.type)}</option>`).join('')}</select></label>
+        <label class="device-form-field"><span>Primary user (search by name or email)</span><input class="form-control" id="primaryUserLookup" list="inventoryUserSuggestions" autocomplete="off" value="${escapeHtml(device['Primary user display name'] || '')}" placeholder="Type a user name or email"></label>
+        <datalist id="inventoryUserSuggestions">${(App.modules.users?.checkoutOptions?.() || []).map((user) => `<option value="${escapeHtml(user.name)}" label="${escapeHtml(user.email || '')}"></option>${user.email ? `<option value="${escapeHtml(user.email)}" label="${escapeHtml(user.name)}"></option>` : ''}`).join('')}</datalist>
+        <label class="device-form-field"><span>Primary user email</span><input class="form-control" id="primaryUserEmail" type="email" value="${escapeHtml(device['Primary user email address'] || device['Primary user UPN'] || '')}" placeholder="Select a user or enter a new email"></label>
       </form>`,
-      onConfirm: () => {
+      onOpen: () => {
+        const lookup = document.getElementById('primaryUserLookup');
+        const emailInput = document.getElementById('primaryUserEmail');
+        const onlineStatusInput = document.querySelector('#deviceForm select[data-online-status="true"]');
+        onlineStatusInput?.addEventListener('change', () => { onlineStatusInput.dataset.edited = 'true'; });
+        lookup?.addEventListener('input', () => {
+          const typed = lookup.value.trim().toLowerCase();
+          const match = (App.modules.users?.checkoutOptions?.() || []).find((user) => user.name.toLowerCase() === typed || user.email.toLowerCase() === typed);
+          if (match) {
+            lookup.value = match.name;
+            emailInput.value = match.email;
+          } else if (typed.includes('@')) emailInput.value = lookup.value.trim();
+        });
+      },
+      onConfirm: async () => {
         const form = document.getElementById('deviceForm');
+        if (!form.reportValidity()) return;
         const formData = new FormData(form);
         const updated = { ...device };
         updated['Asset type'] = normalizeDeviceType(formData.get('Asset type'));
-        EDITABLE_FIELDS.forEach(([key]) => { updated[key] = String(formData.get(key) || '').trim(); });
+        EDITABLE_FIELDS.forEach(([key]) => {
+          if (key !== 'Device Online Status') updated[key] = String(formData.get(key) || '').trim();
+        });
+        const onlineStatusInput = form.elements.namedItem('Device Online Status');
+        if (onlineStatusInput?.dataset.edited === 'true') {
+          updated['Device Online Status'] = String(formData.get('Device Online Status') || '').trim();
+        } else if (!['Active', 'Inactive>90days', 'Unknown'].includes(String(device['Device Online Status'] || '').trim())) {
+          delete updated['Device Online Status'];
+        }
+        const typedUser = String(form.querySelector('#primaryUserLookup').value || '').trim();
+        const typedEmail = String(form.querySelector('#primaryUserEmail').value || '').trim();
+        const selectedUser = (App.modules.users?.checkoutOptions?.() || []).find((user) => user.name.toLowerCase() === typedUser.toLowerCase() || (typedEmail && user.email.toLowerCase() === typedEmail.toLowerCase()));
+        updated['Primary user display name'] = selectedUser?.name || typedUser;
+        updated['Primary user email address'] = selectedUser?.email || typedEmail || (typedUser.includes('@') ? typedUser : '');
+        updated['Primary user UPN'] = updated['Primary user email address'];
+        updated['Status Label'] = String(formData.get('Status Label') || '').trim();
         if (!updated['Device name'] || !updated['Serial number']) {
           Toast.show('Device name and serial number are required.', 'error');
           return;
@@ -1387,12 +1826,27 @@ App.registerModule('inventory', (() => {
         }
         updated['Duplicate Serial'] = isEditing && normalizeSerial(updated['Serial number']) === normalizeSerial(device['Serial number']) ? device['Duplicate Serial'] === true : false;
         updated['IntuneGroup.SerialNumber'] = updated['Serial number'];
-        const storageGb = parseStorageValue(updated['Total storage'], 'bytes');
-        updated['Total storage (GB)'] = storageGb === null ? '' : Number(storageGb.toFixed(2));
+        delete updated['Total storage'];
+        delete updated['Total Storage'];
         if (isEditing) inventory[index] = updated;
         else inventory.push({ ...updated, 'Warranty Match Status': updated['Warranty Match Status'] || 'Unmatched', 'Duplicate Serial': false });
         try {
+          const userName = updated['Primary user display name'];
+          const userEmail = updated['Primary user email address'];
+          const managedUsers = App.store.get('users') || [];
+          const existingUser = managedUsers.find((user) => (userEmail && String(user.Email || '').trim().toLowerCase() === userEmail.toLowerCase()) || (userName && String(user.Name || '').trim().toLowerCase() === userName.toLowerCase()));
+          if ((userName || userEmail) && !existingUser && userName) {
+            const newUser = {
+              'User ID': globalThis.crypto?.randomUUID?.() || `user-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              Name: userName,
+              Email: userEmail,
+              Country: updated.Country || '',
+              Location: updated.Location || ''
+            };
+            await App.store.set('users', [...managedUsers, newUser]);
+          }
           setInventory(inventory);
+          await (App.store.writeQueues.get('inventory') || Promise.resolve());
           Modal.close();
           render(container, country);
           Toast.show(isEditing ? 'Device updated.' : 'Device added.', 'success');
@@ -1427,6 +1881,56 @@ App.registerModule('inventory', (() => {
     });
   }
 
+  function openStatusLabelManager(container, country) {
+    const rowsFor = (labels) => labels.map((label) => `<div class="status-label-row replacement-form-grid">
+      <input class="form-control status-label-name" value="${escapeHtml(label.name)}" placeholder="Label name" aria-label="Status label name" />
+      <select class="form-control status-label-type" aria-label="Status label characteristic">${['Undeployable', 'Deployable', 'Archived', 'Pending'].map((type) => `<option ${label.type === type ? 'selected' : ''}>${type}</option>`).join('')}</select>
+      <button type="button" class="btn btn-danger btn-sm remove-status-label">Remove</button>
+    </div>`).join('');
+    Modal.open({
+      title: 'Manage status labels',
+      confirmText: 'Save labels',
+      size: 'lg',
+      body: `<p class="form-help">Deployable assets can be checked out. Undeployable and Pending assets cannot be checked out. Archived assets appear only in Archived view.</p>
+        <div id="statusLabelsEditor">${rowsFor(getStatusLabels())}</div>
+        <button type="button" class="btn btn-secondary btn-sm" id="addStatusLabelBtn">+ Add status label</button>`,
+      onOpen: () => {
+        const editor = document.getElementById('statusLabelsEditor');
+        editor.addEventListener('click', (event) => {
+          if (event.target.closest('.remove-status-label')) event.target.closest('.status-label-row').remove();
+        });
+        document.getElementById('addStatusLabelBtn').addEventListener('click', () => {
+          const wrapper = document.createElement('div');
+          wrapper.innerHTML = rowsFor([{ name: '', type: 'Undeployable' }]);
+          editor.append(wrapper.firstElementChild);
+          editor.lastElementChild.querySelector('.status-label-name').focus();
+        });
+      },
+      onConfirm: async () => {
+        const previous = getStatusLabels();
+        const labels = Array.from(document.querySelectorAll('#statusLabelsEditor .status-label-row')).map((row) => {
+          const name = row.querySelector('.status-label-name').value.trim();
+          const type = row.querySelector('.status-label-type').value;
+          const old = previous.find((label) => label.name.toLowerCase() === name.toLowerCase());
+          return { id: old?.id || (globalThis.crypto?.randomUUID?.() || `status-${Date.now()}-${Math.random().toString(36).slice(2)}`), name, type };
+        });
+        const names = labels.map((label) => label.name.toLowerCase());
+        if (!labels.length || labels.some((label) => !label.name) || new Set(names).size !== names.length) {
+          Toast.show('Keep at least one status label. Names must be filled in and unique.', 'error');
+          return;
+        }
+        try {
+          await App.store.set('statusLabels', labels);
+          Modal.close();
+          render(container, country);
+          Toast.show('Status labels saved.', 'success');
+        } catch (error) {
+          Toast.show(`Could not save status labels: ${error.message || error}`, 'error', 6000);
+        }
+      }
+    });
+  }
+
   function render(container, country = 'all') {
     const previousSearch = container.querySelector('#inventorySearch')?.value || '';
     const rows = getInventory();
@@ -1440,6 +1944,7 @@ App.registerModule('inventory', (() => {
     const overdueCount = rows.filter((device) => isReturnOverdue(getCurrentCheckout(device))).length;
     const inventoryStatus = overdueCount ? ` · ${overdueCount} overdue return${overdueCount === 1 ? '' : 's'}` : '';
     const visibleColumns = getVisibleColumns();
+    const orderedColumns = getOrderedLayoutColumns();
 
     container.innerHTML = `
       <div class="section-header">
@@ -1448,15 +1953,20 @@ App.registerModule('inventory', (() => {
           <div class="section-sub">${inventorySummary}${inventoryStatus} · saved in local SQLite database${dashboardFilterLabel ? ` · Dashboard: ${escapeHtml(dashboardFilterLabel)}` : ''}</div>
         </div>
         <div class="section-actions">
-          <button class="btn btn-secondary btn-sm" id="undoInventoryBtn" ${history.undo.length ? '' : 'disabled'}>Undo</button>
-          <button class="btn btn-secondary btn-sm" id="redoInventoryBtn" ${history.redo.length ? '' : 'disabled'}>Redo</button>
           <button class="btn btn-primary btn-sm" id="addDeviceBtn">+ Add ${activeDeviceType ? escapeHtml(deviceTypeLabel(activeDeviceType)) : 'device'}</button>
+          <div class="inventory-action-group" aria-label="Inventory actions">
+            <button class="btn btn-secondary btn-sm" id="undoInventoryBtn" ${history.undo.length ? '' : 'disabled'}>Undo</button>
+            <button class="btn btn-secondary btn-sm" id="redoInventoryBtn" ${history.redo.length ? '' : 'disabled'}>Redo</button>
+            <button class="btn btn-secondary btn-sm" id="manageStatusLabelsBtn">Manage status labels</button>
+          </div>
+          <div id="inventorySettingsHost"></div>
         </div>
       </div>
 
       <div class="filter-bar inventory-filters">
         <input id="inventorySearch" class="search-input" placeholder="Search all fields: device, user, serial, warranty, status..." value="${escapeHtml(previousSearch)}" />
         <label class="duplicate-filter-option"><input type="checkbox" id="duplicatesOnlyFilter" ${duplicatesOnly ? 'checked' : ''}> Duplicates only</label>
+        <label class="duplicate-filter-option"><input type="checkbox" id="archivedViewFilter" ${archivedView ? 'checked' : ''}> Archived view</label>
       </div>
 
       <div class="bulk-actions" role="region" aria-label="Selected device actions">
@@ -1473,8 +1983,8 @@ App.registerModule('inventory', (() => {
 
       <div class="card inventory-table-wrap">
         <table class="inventory-table">
-          <colgroup><col />${LAYOUT_COLUMNS.map((column) => `<col data-layout-column="${escapeHtml(column)}" ${visibleColumns.includes(column) ? '' : 'class="column-hidden"'} />`).join('')}<col /></colgroup>
-          <thead><tr><th><input type="checkbox" id="selectAllDevices" aria-label="Select all visible devices" ${filteredRows.length && filteredRows.every((device) => selectedDeviceIndexes.has(rows.indexOf(device))) ? 'checked' : ''}></th>${LAYOUT_COLUMNS.map((col) => `<th data-layout-column="${escapeHtml(col)}"${visibleColumns.includes(col) ? '' : ' class="column-hidden"'}${col === 'Fixed Asset Number' ? ` title="${escapeHtml(FIXED_ASSET_NUMBER_HELP)}"` : ''}>${escapeHtml(col === 'IntuneGroup.GroupTag' ? 'Group tag' : col === 'Asset type' ? 'Device type' : col === 'Handover Eligibility' ? 'Deployment Status' : col)}</th>`).join('')}<th>Actions</th></tr></thead>
+          <colgroup><col />${orderedColumns.map((column) => `<col data-layout-column="${escapeHtml(column)}" ${visibleColumns.includes(column) ? '' : 'class="column-hidden"'} />`).join('')}<col /></colgroup>
+          <thead><tr><th><input type="checkbox" id="selectAllDevices" aria-label="Select all visible devices" ${filteredRows.length && filteredRows.every((device) => selectedDeviceIndexes.has(rows.indexOf(device))) ? 'checked' : ''}></th>${orderedColumns.map((col) => `<th data-layout-column="${escapeHtml(col)}"${visibleColumns.includes(col) ? '' : ' class="column-hidden"'}${col === 'Fixed Asset Number' ? ` title="${escapeHtml(FIXED_ASSET_NUMBER_HELP)}"` : ''}>${escapeHtml(col === 'IntuneGroup.GroupTag' ? 'Group tag' : col === 'IntuneGroup.GroupName' ? 'INTUNE.GROUPNAME' : col === 'Asset type' ? 'Category' : col === 'OS version' ? 'OS Version' : col)}</th>`).join('')}<th>Actions</th></tr></thead>
           <tbody>${renderTableBody(filteredRows, rows)}</tbody>
         </table>
       </div>
@@ -1485,8 +1995,8 @@ App.registerModule('inventory', (() => {
     const settingsHost = document.getElementById('inventorySettingsHost');
     settingsHost.innerHTML = `
       <details class="inventory-settings-dropdown">
-        <summary class="btn btn-secondary btn-sm" aria-label="Inventory settings">⚙ Settings</summary>
-        <div class="inventory-settings-menu" aria-label="Inventory settings actions">
+        <summary class="btn btn-secondary btn-sm" aria-label="More tools">More tools</summary>
+        <div class="inventory-settings-menu" aria-label="More inventory tools">
           <button type="button" class="inventory-settings-action" id="backupDatabaseBtn">Backup Database</button>
           <button type="button" class="inventory-settings-action" id="restoreDatabaseBtn">Restore Database</button>
           <button type="button" class="inventory-settings-action" id="exportInventoryBtn">Export CSV</button>
@@ -1519,6 +2029,12 @@ App.registerModule('inventory', (() => {
       duplicatesOnly = event.target.checked;
       render(container, country);
     });
+    container.querySelector('#archivedViewFilter').addEventListener('change', (event) => {
+      selectedDeviceIndexes.clear();
+      archivedView = event.target.checked;
+      render(container, country);
+    });
+    container.querySelector('#manageStatusLabelsBtn').addEventListener('click', () => openStatusLabelManager(container, country));
     const updateBulkControls = () => {
       const count = selectedDeviceIndexes.size;
       container.querySelector('#selectedDeviceCount').textContent = `${count} selected`;
@@ -1583,7 +2099,7 @@ App.registerModule('inventory', (() => {
     });
     settingsHost.querySelector('#exportInventoryBtn').addEventListener('click', () => {
       settingsDropdown.open = false;
-      exportCurrentInventory();
+      promptInventoryExport();
     });
     settingsHost.querySelector('#backupDatabaseBtn').addEventListener('click', () => {
       settingsDropdown.open = false;
@@ -1617,10 +2133,12 @@ App.registerModule('inventory', (() => {
       try {
         const { rows: imported, validation: inventoryValidation } = parseInventoryCsv(await file.text());
         const duplicateCount = countImportDuplicates(getInventory(), imported);
+        let importRows = imported;
+        let selectedRecognizedColumns = inventoryValidation.recognized;
         event.target.value = '';
         const saveImport = (keepDuplicates) => {
           try {
-            const result = applyInventoryImport(imported, keepDuplicates);
+            const result = applyInventoryImport(importRows, keepDuplicates);
             selectedDeviceIndexes.clear();
             Modal.close();
             render(container, country);
@@ -1631,7 +2149,7 @@ App.registerModule('inventory', (() => {
               body: renderImportReport({
                 title: 'Inventory Import Report',
                 summaryLines: parts,
-                recognizedColumns: inventoryValidation.recognized.map((column) => IMPORT_COLUMN_LABELS[column] || column),
+                recognizedColumns: selectedRecognizedColumns.map((column) => IMPORT_COLUMN_LABELS[column] || column),
                 unrecognizedColumns: inventoryValidation.unrecognized
               }),
               onConfirm: () => Modal.close(),
@@ -1643,18 +2161,37 @@ App.registerModule('inventory', (() => {
             Toast.show(`CSV import could not be saved: ${error.message || error}`, 'error');
           }
         };
-        if (duplicateCount) {
+        const reviewDuplicates = () => {
+          if (!duplicateCount) {
+            saveImport(false);
+            return;
+          }
           Modal.open({
             title: 'Duplicate serial numbers found',
             confirmText: 'Continue import',
             body: `<p>${duplicateCount} duplicate serial-number record${duplicateCount === 1 ? '' : 's'} found. Choose how to handle them:</p>
               <label class="duplicate-choice"><input type="radio" name="duplicateImportMode" value="merge" checked> Merge into the existing device record</label>
-              <label class="duplicate-choice"><input type="radio" name="duplicateImportMode" value="keep"> Keep each as a separate device (append --1, --2, etc.)</label>`,
+              <label class="duplicate-choice"><input type="radio" name="duplicateImportMode" value="keep"> Keep each as a separate device (append -1, -2, etc.)</label>`,
             onConfirm: () => saveImport(document.querySelector('input[name="duplicateImportMode"]:checked')?.value === 'keep')
           });
-        } else {
-          saveImport(false);
-        }
+        };
+        Modal.open({
+          title: 'Review inventory CSV columns',
+          confirmText: 'Proceed to import',
+          body: `<p>All recognized columns are selected by default. Uncheck optional columns you do not want to import.</p>${renderImportReport({
+            title: `${imported.length} device row${imported.length === 1 ? '' : 's'} ready for review`,
+            selectableColumns: inventoryValidation.recognized.map((column) => ({ key: column, label: IMPORT_COLUMN_LABELS[column] || column })),
+            unrecognizedColumns: inventoryValidation.unrecognized
+          })}`,
+          onConfirm: () => {
+            const checked = Array.from(document.querySelectorAll('#modalBody input[data-import-column]:checked'));
+            selectedRecognizedColumns = checked.map((input) => input.dataset.importColumn);
+            importRows = imported.map((record) => selectedImportRecord(record, selectedRecognizedColumns));
+            Modal.close();
+            reviewDuplicates();
+          },
+          size: 'lg'
+        });
       } catch (error) {
         event.target.value = '';
         Toast.show(error.message || 'CSV import failed.', 'error');
@@ -1776,6 +2313,7 @@ App.registerModule('inventory', (() => {
       duplicatesOnly = false;
       warrantyStatusFilter = '';
       activeDeviceType = '';
+      archivedView = false;
       selectedDeviceIndexes.clear();
       App.navigateTo('inventory');
     },
@@ -1785,6 +2323,7 @@ App.registerModule('inventory', (() => {
       dashboardRecordIndexes = null;
       dashboardFilterLabel = '';
       activeDeviceType = '';
+      archivedView = false;
       selectedDeviceIndexes.clear();
       updateDeviceTypeNavigation();
       const container = document.getElementById('moduleContainer');
@@ -1798,6 +2337,7 @@ App.registerModule('inventory', (() => {
       dashboardFilterLabel = '';
       activeDeviceType = '';
       duplicatesOnly = true;
+      archivedView = false;
       warrantyStatusFilter = '';
       selectedDeviceIndexes.clear();
       const container = document.getElementById('moduleContainer');
@@ -1809,6 +2349,7 @@ App.registerModule('inventory', (() => {
       dashboardFilterLabel = '';
       activeDeviceType = '';
       duplicatesOnly = false;
+      archivedView = false;
       warrantyStatusFilter = 'Matched';
       selectedDeviceIndexes.clear();
       const container = document.getElementById('moduleContainer');

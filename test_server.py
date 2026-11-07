@@ -402,6 +402,25 @@ class SQLiteApiTests(unittest.TestCase):
         self.assertIn("Duplicate user email", result["error"])
         self.assertEqual(self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})[1]["users"], existing)
 
+    def test_status_labels_api_round_trip_and_characteristic_validation(self) -> None:
+        labels = [
+            {"id": "ready", "name": "Ready to Deploy", "type": "Deployable"},
+            {"id": "archive", "name": "Archived", "type": "Archived"},
+        ]
+        status, bootstrap = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
+        self.assertEqual(status, 200)
+        self.assertTrue(bootstrap["statusLabels"])
+        status, saved = self.request_json("/api/status-labels", "PUT", labels)
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["saved"], 2)
+        self.assertEqual(self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})[1]["statusLabels"], labels)
+        status, result = self.request_json("/api/status-labels", "PUT", [
+            {"id": "bad", "name": "Invalid", "type": "Assignable"},
+        ])
+        self.assertEqual(status, 400)
+        self.assertIn("valid characteristic", result["error"])
+        self.assertEqual(self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})[1]["statusLabels"], labels)
+
     def test_checkout_history_api_rejects_invalid_record(self) -> None:
         status, result = self.request_json("/api/checkout-history", "PUT", [{
             "Event ID": "evt-001", "Asset key": "device:intune-1", "Event type": "checkout",
@@ -411,6 +430,7 @@ class SQLiteApiTests(unittest.TestCase):
         self.assertIn("YYYY-MM-DD", result["error"])
 
     def test_backup_download_and_restore_round_trip_all_records(self) -> None:
+        self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
         inventory = [{"Device ID": "DEVICE-1", "Device name": "Backup laptop", "Serial number": "SN-1"}]
         warranty = [{"Serial number": "SN-1", "Warranty End Date": "2027-01-01"}]
         replacements = [{"Replacement ID": "REP-1", "Old Device Serial Number": "SN-0"}]
@@ -422,12 +442,14 @@ class SQLiteApiTests(unittest.TestCase):
             "User ID": "USER-1", "Name": "Alex User", "Email": "alex@example.com",
             "Country": "Singapore", "Location": "HQ",
         }]
+        status_labels = [{"id": "ready", "name": "Ready to Deploy", "type": "Deployable"}]
         for path, records in (
             ("/api/inventory", inventory),
             ("/api/warranty", warranty),
             ("/api/replacement-history", replacements),
             ("/api/checkout-history", checkouts),
             ("/api/users", users),
+            ("/api/status-labels", status_labels),
         ):
             status, result = self.request_json(path, "PUT", records)
             self.assertEqual(status, 200, result)
@@ -451,6 +473,7 @@ class SQLiteApiTests(unittest.TestCase):
         self.assertEqual(data["replacementHistory"], replacements)
         self.assertEqual(data["checkoutHistory"], checkouts)
         self.assertEqual(data["users"], users)
+        self.assertEqual(data["statusLabels"], status_labels)
 
     def test_invalid_backup_restore_preserves_current_database(self) -> None:
         inventory = [{"Device name": "Keep this record", "Serial number": "SN-KEEP"}]

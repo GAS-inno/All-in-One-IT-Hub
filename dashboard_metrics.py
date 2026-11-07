@@ -16,6 +16,10 @@ FIELD_ALIASES = {
     "warranty": ("Warranty Status", "Warranty Match Status"),
     "planned_action": ("Planned Action", "Action performed", "Action Status in intune"),
     "model": ("Model", "Intune_Group_APAC_Devices - Copy.Model", "IntuneGroup.Model"),
+    "category": ("Asset type", "Category", "Device type", "Asset Type"),
+    "asset_status": ("Status Label", "Status"),
+    "online_status": ("Device Online Status", "Active device status"),
+    "manufacturer": ("Manufacturer",),
 }
 UNKNOWN = "Unknown"
 
@@ -39,14 +43,82 @@ def _key(value: str) -> str:
 
 
 def _serial_key(record: dict[str, Any]) -> str:
-    serial = _text(record, "Serial number", "IntuneGroup.SerialNumber")
-    while True:
-        base, marker, suffix = serial.rpartition("--")
-        if marker and suffix.isdigit():
-            serial = base
+    serial = re.sub(r"--?\d+$", "", _text(record, "Serial number", "IntuneGroup.SerialNumber"))
+    if serial:
+        return _key(serial)
+    device_id = _text(record, "Device ID")
+    if device_id.casefold() not in {"n/a", "na", "none", "null", "unknown", "-"}:
+        return _key(device_id)
+    device_name = _text(record, "Device name")
+    return _key(device_name) if device_name.casefold() not in {"n/a", "na", "none", "null", "unknown", "-"} else ""
+
+
+def _asset_key(record: dict[str, Any]) -> str:
+    serial = re.sub(r"--?\d+$", "", _text(record, "Serial number", "IntuneGroup.SerialNumber"))
+    if serial:
+        return _key(serial)
+    device_id = _key(_text(record, "Device ID"))
+    return "" if device_id in {"n/a", "na", "none", "null", "unknown", "-"} else device_id
+
+
+def _checkout_asset_keys(checkout_history: list[dict[str, Any]] | None) -> set[str]:
+    current: set[str] = set()
+    for event in checkout_history or []:
+        key = _asset_key(event)
+        if not key:
+            legacy_key = _key(_text(event, "Asset key"))
+            key = legacy_key.split(":", 1)[1] if ":" in legacy_key else legacy_key
+        if not key:
+            continue
+        if _key(_text(event, "Event type")) == "checkout":
+            current.add(key)
         else:
-            break
-    return _key(serial) or _text(record, "Device ID") or _text(record, "Device name")
+            current.discard(key)
+    return current
+
+
+def _category(record: dict[str, Any]) -> str:
+    raw = _first(record, "category") or "Laptop"
+    known = {"laptop": "Laptop", "firewall": "Firewall", "ups": "UPS", "accesspoint": "AccessPoint", "switch": "Switch"}
+    return known.get(re.sub(r"[\s_-]+", "", raw).casefold(), raw)
+
+
+def _status_label_type(record: dict[str, Any], status_labels: list[dict[str, Any]] | None) -> str:
+    name = _text(record, "Status Label") or "Ready to Deploy"
+    for label in status_labels or []:
+        if _key(str(label.get("name") or "")) == _key(name):
+            return str(label.get("type") or "Undeployable")
+    defaults = {
+        "ready to deploy": "Deployable", "deployed": "Deployable",
+        "awaiting re imaging": "Pending", "in repair": "Undeployable",
+        "decommissioned": "Archived", "archived": "Archived",
+    }
+    label_key = re.sub(r"[^a-z0-9]+", " ", _key(name)).strip()
+    return defaults.get(label_key, "Undeployable")
+
+
+def _has_assignment(record: dict[str, Any], active_checkout_keys: set[str] | None = None) -> bool:
+    if _text(record, "Primary user email address", "Primary user UPN", "Primary User UPN"):
+        return True
+    key = _asset_key(record)
+    return bool(key and key in (active_checkout_keys or set()))
+
+
+def _asset_status(record: dict[str, Any], status_labels: list[dict[str, Any]] | None = None, active_checkout_keys: set[str] | None = None) -> str:
+    label = _text(record, "Status Label") or "Ready to Deploy"
+    if _status_label_type(record, status_labels) == "Deployable" and _has_assignment(record, active_checkout_keys):
+        return "Deployed"
+    return label
+
+
+def _online_status(record: dict[str, Any], today: date | None = None) -> str:
+    explicit = _key(_first(record, "online_status"))
+    if explicit in {"active", "inactive>90days", "unknown"}:
+        return {"active": "Active", "inactive>90days": "Inactive>90days", "unknown": "Unknown"}[explicit]
+    value = _text(record, "Last check-in", "Last Check-In", "Last checkin", "LastSyncDateTime")
+    if not value:
+        return "Unknown"
+    return "Inactive>90days" if _is_stale(record, today or date.today()) else "Active"
 
 
 def _os(record: dict[str, Any]) -> str:
@@ -164,7 +236,11 @@ def _age_band(record: dict[str, Any]) -> str:
     return "6+ years"
 
 
-def _dimension_value(record: dict[str, Any], field: str, today: date) -> str:
+def _dimension_value(
+    record: dict[str, Any], field: str, today: date,
+    status_labels: list[dict[str, Any]] | None = None,
+    active_checkout_keys: set[str] | None = None,
+) -> str:
     if field == "country":
         return _first(record, field) or UNKNOWN
     if field == "department":
@@ -181,25 +257,40 @@ def _dimension_value(record: dict[str, Any], field: str, today: date) -> str:
         return _action(record)
     if field == "model":
         return _first(record, field) or UNKNOWN
+    if field == "category":
+        return _category(record)
+    if field == "asset_status":
+        return _asset_status(record, status_labels, active_checkout_keys)
+    if field == "online_status":
+        return _online_status(record, today)
+    if field == "manufacturer":
+        return _first(record, field) or UNKNOWN
     if field == "age":
         return _age_band(record)
     return UNKNOWN
 
 
-def filter_options(records: list[dict[str, Any]], today: date | None = None) -> dict[str, list[str]]:
+def filter_options(
+    records: list[dict[str, Any]], today: date | None = None,
+    status_labels: list[dict[str, Any]] | None = None,
+    checkout_history: list[dict[str, Any]] | None = None,
+) -> dict[str, list[str]]:
     today = today or date.today()
+    active_checkout_keys = _checkout_asset_keys(checkout_history)
     return {
-        field: sorted({_dimension_value(row, field, today) for row in records}, key=str.casefold)
+        field: sorted({_dimension_value(row, field, today, status_labels, active_checkout_keys) for row in records}, key=str.casefold)
         for field in FIELD_ALIASES
     }
 
 
 def _filtered_records(
-    records: list[dict[str, Any]], filters: dict[str, str], today: date
+    records: list[dict[str, Any]], filters: dict[str, str], today: date,
+    status_labels: list[dict[str, Any]] | None = None,
+    active_checkout_keys: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     return [
         row for row in records
-        if all(not value or _key(_dimension_value(row, field, today)) == _key(value) for field, value in filters.items())
+        if all(not value or _key(_dimension_value(row, field, today, status_labels, active_checkout_keys)) == _key(value) for field, value in filters.items())
     ]
 
 
@@ -208,11 +299,14 @@ def matching_record_indexes(
     filters: dict[str, str],
     metric: str,
     today: date | None = None,
+    status_labels: list[dict[str, Any]] | None = None,
+    checkout_history: list[dict[str, Any]] | None = None,
 ) -> list[int]:
     today = today or date.today()
+    active_checkout_keys = _checkout_asset_keys(checkout_history)
     selected_pairs = [
         (index, row) for index, row in enumerate(records)
-        if all(not value or _key(_dimension_value(row, field, today)) == _key(value) for field, value in filters.items())
+        if all(not value or _key(_dimension_value(row, field, today, status_labels, active_checkout_keys)) == _key(value) for field, value in filters.items())
     ]
     selected = [row for _, row in selected_pairs]
 
@@ -233,6 +327,13 @@ def matching_record_indexes(
     else:
         predicates = {
             "totalAssets": lambda row: True,
+            "deployedAssets": lambda row: _asset_status(row, status_labels, active_checkout_keys) == "Deployed",
+            "availableAssets": lambda row: _status_label_type(row, status_labels) == "Deployable" and not _has_assignment(row, active_checkout_keys),
+            "onlineActive": lambda row: _online_status(row, today) == "Active",
+            "onlineInactive90": lambda row: _online_status(row, today) == "Inactive>90days",
+            "onlineUnknown": lambda row: _online_status(row, today) == "Unknown",
+            "archivedAssets": lambda row: _status_label_type(row, status_labels) == "Archived",
+            "pendingAssets": lambda row: _status_label_type(row, status_labels) == "Pending",
             "activeAssets": lambda row: _status(row) == "Active",
             "inactiveAssets": lambda row: _status(row) == "Inactive",
             "stock": lambda row: _status(row) == "Stock",
@@ -260,10 +361,15 @@ def matching_record_indexes(
     return matches
 
 
-def build_dashboard(records: list[dict[str, Any]], filters: dict[str, str] | None = None, today: date | None = None) -> dict[str, Any]:
+def build_dashboard(
+    records: list[dict[str, Any]], filters: dict[str, str] | None = None, today: date | None = None,
+    status_labels: list[dict[str, Any]] | None = None,
+    checkout_history: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     today = today or date.today()
     filters = filters or {}
-    selected = _filtered_records(records, filters, today)
+    active_checkout_keys = _checkout_asset_keys(checkout_history)
+    selected = _filtered_records(records, filters, today, status_labels, active_checkout_keys)
     countries = sorted({_dimension_value(row, "country", today) for row in selected}, key=str.casefold)
     serial_counts = Counter(_serial_key(row) for row in selected if _text(row, "Serial number", "IntuneGroup.SerialNumber"))
     duplicate_serial_count = sum(count > 1 for count in serial_counts.values())
@@ -271,6 +377,14 @@ def build_dashboard(records: list[dict[str, Any]], filters: dict[str, str] | Non
     duplicate_serial_count = max(duplicate_serial_count, len(flagged_duplicate_keys))
     kpis = {
         "totalAssets": len(selected),
+        "deployedAssets": sum(_asset_status(row, status_labels, active_checkout_keys) == "Deployed" for row in selected),
+        "availableAssets": sum(_status_label_type(row, status_labels) == "Deployable" and not _has_assignment(row, active_checkout_keys) for row in selected),
+        "onlineActive": sum(_online_status(row, today) == "Active" for row in selected),
+        "onlineInactive90": sum(_online_status(row, today) == "Inactive>90days" for row in selected),
+        "onlineUnknown": sum(_online_status(row, today) == "Unknown" for row in selected),
+        "archivedAssets": sum(_status_label_type(row, status_labels) == "Archived" for row in selected),
+        "pendingAssets": sum(_status_label_type(row, status_labels) == "Pending" for row in selected),
+        "coveredWarranty": sum(_warranty_status(row, today) == "Covered" for row in selected),
         "activeAssets": sum(_status(row) == "Active" for row in selected),
         "inactiveAssets": sum(_status(row) == "Inactive" for row in selected),
         "stock": sum(_status(row) == "Stock" for row in selected),
@@ -311,6 +425,15 @@ def build_dashboard(records: list[dict[str, Any]], filters: dict[str, str] | Non
     age_labels = ["0-1 years", "2-3 years", "4-5 years", "6+ years", UNKNOWN]
     os_labels = sorted({_os(row) for row in selected}, key=lambda x: (x == UNKNOWN, x.casefold()))
     warranty_labels = list(warranty_series)
+    category_labels = sorted({_category(row) for row in selected}, key=str.casefold)
+    asset_status_labels = sorted({_asset_status(row, status_labels, active_checkout_keys) for row in selected}, key=str.casefold)
+    online_labels = ["Active", "Inactive>90days", "Unknown"]
+    model_counts = Counter(_first(row, "model") or UNKNOWN for row in selected)
+    top_models = sorted(model_counts.items(), key=lambda item: (-item[1], item[0].casefold()))[:10]
+    online_by_country = [{
+        "label": status,
+        "data": [sum(_online_status(row, today) == status and _dimension_value(row, "country", today) == country for row in selected) for country in countries],
+    } for status in online_labels]
     return {
         "refreshedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "sourceRecordCount": len(selected),
@@ -318,6 +441,22 @@ def build_dashboard(records: list[dict[str, Any]], filters: dict[str, str] | Non
         "filters": filters,
         "kpis": kpis,
         "charts": {
+            "categoryDistribution": counts("category", category_labels),
+            "modelDistribution": {"labels": [model for model, _ in top_models], "data": [count for _, count in top_models]},
+            "assetStatusDistribution": {
+                "labels": asset_status_labels,
+                "data": [sum(_asset_status(row, status_labels, active_checkout_keys) == label for row in selected) for label in asset_status_labels],
+            },
+            "onlineStatusDistribution": {
+                "labels": online_labels,
+                "data": [sum(_online_status(row, today) == label for row in selected) for label in online_labels],
+            },
+            "warrantyExposure": counts("warranty", warranty_labels),
+            "assetsByCountry": {
+                "labels": countries,
+                "data": [sum(_dimension_value(row, "country", today) == country for row in selected) for country in countries],
+            },
+            "onlineStatusByCountry": {"labels": countries, "datasets": online_by_country},
             "statusByCountry": {"labels": countries, "datasets": grouped("status", status_series)},
             "lifecycleByCountry": {"labels": countries, "datasets": grouped("lifecycle", lifecycle_series)},
             "warrantyByCountry": {"labels": countries, "datasets": grouped("warranty", warranty_series)},
@@ -329,8 +468,8 @@ def build_dashboard(records: list[dict[str, Any]], filters: dict[str, str] | Non
 
 
 def _is_stale(record: dict[str, Any], today: date) -> bool:
-    value = _text(record, "LastSyncDateTime", "Last check-in", "Last Check-in")
-    for pattern in ("%Y-%m-%d", "%m/%d/%Y", "%d %b %Y", "%Y-%m-%d %H:%M:%S"):
+    value = _text(record, "Last check-in", "Last Check-In", "Last checkin", "LastSyncDateTime")
+    for pattern in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d %b %Y", "%d-%b-%Y", "%Y-%m-%d %H:%M:%S"):
         try:
             return (today - datetime.strptime(value[:19], pattern).date()).days > 90
         except ValueError:
