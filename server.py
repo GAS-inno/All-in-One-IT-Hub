@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
+from constants import CONDITION, DEPLOYMENT_STATUS, DISPOSITION_METHOD
 from dashboard_metrics import build_dashboard, filter_options, matching_record_indexes
 
 ROOT = Path(__file__).resolve().parent
@@ -311,9 +312,29 @@ def _as_text(record: dict[str, Any], *keys: str) -> str:
     return ""
 
 
+def _validate_device_status(record: dict[str, Any]) -> None:
+    deployment_status = _as_text(record, "deployment_status").strip()
+    condition = _as_text(record, "condition").strip()
+    disposition_method = _as_text(record, "disposition_method").strip()
+    is_archived = record.get("is_archived")
+    if deployment_status and deployment_status not in DEPLOYMENT_STATUS:
+        raise ValueError(f"Unknown deployment status: {deployment_status}.")
+    if condition and condition not in CONDITION:
+        raise ValueError(f"Unknown condition: {condition}.")
+    if is_archived is not None and not isinstance(is_archived, bool):
+        raise ValueError("Inventory is_archived must be a boolean.")
+    if deployment_status == "Disposed" and condition not in ("End of Life",):
+        raise ValueError("Deployment status 'Disposed' requires condition 'End of Life'.")
+    if disposition_method and deployment_status not in ("Retired", "Disposed"):
+        raise ValueError(f"Disposition method '{disposition_method}' requires deployment status 'Retired' or 'Disposed'.")
+    if deployment_status == "Retired" and disposition_method and disposition_method not in DISPOSITION_METHOD:
+        raise ValueError(f"Unknown disposition method: {disposition_method}.")
+
+
 def _replace_inventory(connection: sqlite3.Connection, devices: list[dict[str, Any]]) -> None:
     assignments: dict[str, list[tuple[str, str]]] = {}
     for record in devices:
+        _validate_device_status(record)
         serial = _asset_serial(record)
         name = " ".join(_as_text(record, "Primary user display name").casefold().split())
         email = _as_text(record, "Primary user email address", "Primary user UPN").strip().casefold()
@@ -1292,11 +1313,12 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
 
 
 def main() -> None:
-    host = "127.0.0.1"
-    port = 8000
+    host = os.environ.get("NEXIT_HOST", "127.0.0.1")
+    port = int(os.environ.get("NEXIT_PORT", "8000"))
     connect_database().close()
     server = ThreadingHTTPServer((host, port), InventoryRequestHandler)
-    print(f"NexIT is running at http://localhost:{port}")
+    display_host = "localhost" if host in {"127.0.0.1", "localhost"} else host
+    print(f"NexIT is running at http://{display_host}:{port} (bound to {host}:{port})")
     print(f"SQLite database: {DATABASE_PATH}")
     try:
         server.serve_forever()

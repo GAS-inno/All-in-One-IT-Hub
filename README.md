@@ -47,6 +47,8 @@ The app uses Python's built-in `http.server` and `sqlite3` modules.
 
 Do not use `python -m http.server` as the normal startup method; the app needs its own SQLite API as well as static file serving. If port 8000 is already in use, stop the other app using that port before starting this one.
 
+The server binds to `127.0.0.1:8000` by default. For local testing you can set `NEXIT_PORT` (and optionally `NEXIT_HOST`) before starting it, for example `NEXIT_PORT=8080 python3 server.py`. Keep the default host for normal use; changing `NEXIT_HOST` exposes the unauthenticated app to other machines and is not recommended.
+
 ## First run and local data
 
 The server automatically creates `nexit-assets.db` in the operating system's local application-data directory. On first startup, if the database is empty, the app can copy legacy `nexit_inventory` and `nexit_warranty` browser data into SQLite. The original browser values are not deleted.
@@ -72,7 +74,7 @@ Open **Dashboard** for a business overview of the same inventory shown in **Inve
 1. Open **Inventory**.
 2. Select **Import CSV** and choose an Intune device export. `Device name` and `Serial number` are required; `Device ID` is optional.
 3. If the import finds serial duplicates, choose whether to merge them with existing records or keep them separately. Kept duplicates are given a suffix and highlighted.
-4. Use the universal search box to search across all device fields — device name, user, serial, group, warranty, status, and more. The **Duplicates only** checkbox filters to duplicated serials. Open **Columns** to search fields, show or hide them, and set their order; **Reset defaults** restores the default layout.
+4. Use the universal search box to search across all device fields — device name, user, serial, group, warranty, status, and more. Open **Filter** for a slide-out panel with **Duplicate Only**, **Show Archived**, and single-select **Deployment Status** and **Condition** filters; the panel and filter values are remembered in the browser until you choose **Reset**. Open **Columns** to search fields, show or hide them, and set their order; **Reset defaults** restores the default layout.
 5. Select a device checkbox to highlight its entire row. Use **Select all visible**, **Edit selected**, or **Delete selected** for bulk actions.
 6. Use **+ Add device** or **Edit** to manage individual records. The per-row **Delete** action has been removed from inventory table rows to prevent accidental deletions. The per-row **Edit** action has been removed as well; select devices with checkboxes and use **Edit selected** for bulk updates. Inventory changes are saved to SQLite. **Undo** and **Redo** are available for recent inventory changes in the current page session. Use bulk **Delete selected** with care for selected devices.
 7. Select **Export CSV** and choose **Active columns** (the columns currently visible) or **All columns**. The active search and filters determine which device rows are exported.
@@ -81,13 +83,15 @@ Forms for adding or editing devices and users stay open when you click outside t
 
 When merging an import, NexIT matches each row to the existing device by normalized serial number. A populated CSV value updates that field; blank cells and `Null`/`undefined` values leave the saved field unchanged.
 
-The inventory supports Laptop, Firewall, UPS, AccessPoint, and Switch device types in the same SQLite database. Use the device-type links below **Inventory** to filter the list; a link is shown only while at least one device of that type exists. Use **Inventory** to see all types. Existing records without an asset type remain laptops. Use **+ Add device** to choose a type and enter common details such as serial number, manufacturer, model, and location, plus network or UPS fields where relevant. CSV imports can include an `Asset type` column, or a `Device type` column containing one of the supported categories; without one they are treated as the currently selected type, or Laptop when viewing all inventory.
+The inventory supports Laptop, Firewall, UPS, AccessPoint, and Switch device types in the same SQLite database. Use the device-type links below **Inventory** to filter the list; a link is shown only while at least one device of that type exists. Use **Inventory** to see all types. Existing records without an asset type remain laptops. Use **+ Add device** to choose a type and enter common details such as serial number, manufacturer, model, country, and location, plus network or UPS fields where relevant. The form puts core asset identity and status first, separates assignment and country/location, and groups less common technical and warranty fields into expandable sections. CSV imports can include an `Asset type` column, or a `Device type` column containing one of the supported categories; without one they are treated as the currently selected type, or Laptop when viewing all inventory.
 
 The sidebar **Download CSV Template** item opens a template-samples modal with a preview of each template (laptop inventory and user list) before downloading it.
 
 **Fixed Asset Number** is optional. Enter the Finance/SAP book asset number when known. Hover over the column heading or field label for guidance; if the number is unavailable, check with the Finance asset manager. The value is retained in SQLite and included in inventory CSV imports and exports.
 
 **Device Online Status** is based on the last check-in: **Inactive>90days** if it was over 90 days ago, **Active** if it was within 90 days, and **Unknown** if the date is empty or invalid. Admins can set an explicit status in the device edit form; CSV imports ignore this field. **Age** shows the warranty span in the format `5y 1m` (derived from the warranty start and end dates).
+
+Each device also has a **Deployment Status** (`In Use`, `In Stock`, `Workshop`, `Retired`, `Disposed`) and a **Condition** (`Good`, `Needs Repair`, `End of Life`, `Unknown`). Both appear as colour-coded badges in the inventory table and can be set in the device form or bulk edit. **Disposed** forces Condition to **End of Life**; a **Disposition method** (`Recycle`, `Resell`, `Donate`, `Wipe & Hold`) is available for **Retired** devices. The server rejects unknown values, a non-boolean `is_archived`, `Disposed` without `End of Life`, and a disposition method on other deployment statuses. Archived devices are hidden unless **Show Archived** is enabled in **Filter**. The canonical lists live in `constants.js` and `constants.py`; keep the two files in sync.
 
 Warranty start and end dates use `dd-MMM-yyyy` in both the inventory table and edit forms. **Age** in **Edit selected** mirrors the value calculated for the inventory table and is read-only.
 
@@ -109,7 +113,7 @@ Each Users record has an **Account Active** value of **YES** or **NO**, which ca
 
 The directory also includes users inferred from imported Primary user fields and active checkout records, so existing inventory users remain available for checkout selection. User profiles list each assigned serial number once; one user may have multiple assets. A current checkout takes precedence over the imported Primary user in the directory until the asset is checked in.
 
-The Users list includes a search box that filters the staff directory by name or email address. The filter combines with the country filter and updates the list of users shown. Use the **Assigned assets (count)** filter to show only users with a specific number of assigned assets. The per-row **Delete** action has been removed; use **Delete selected** with row checkboxes for bulk deletion. Deleting a user clears the Primary user assignment on their assigned devices. Adding a user with an email that already exists merges into the existing user record instead of creating a duplicate. The Users table also supports **Edit selected** with row checkboxes; selecting one or more users and choosing **Edit selected** opens an edit form for their name, email, Account Active status, country, and location.
+The Users list includes a search box that filters the staff directory by name or email address. The summary below the Users title shows the visible user total, active and inactive account totals, and assigned serial count; totals follow the current filters. The filter combines with the country filter and updates the list of users shown. Use the **Assigned assets (count)** filter to show only users with a specific number of assigned assets. The per-row **Delete** action has been removed; use **Delete selected** with row checkboxes for bulk deletion. Deleting a user clears the Primary user assignment on their assigned devices. Adding a user with an email that already exists merges into the existing user record instead of creating a duplicate. The Users table also supports **Edit selected** with row checkboxes; selecting one or more users and choosing **Edit selected** opens an edit form for their name, email, Account Active status, country, and location.
 
 When adding or editing a laptop, use the **Primary user** field to search managed users by name or email. Selecting a match fills in the email; entering a new name and optional email adds that person to the Users directory when the laptop is saved.
 
@@ -119,11 +123,13 @@ Each asset has a **Status** label with one of four characteristics: **Deployable
 
 The **Status** column shows **Deployed** whenever an asset with a Deployable label is assigned to a user, including a Primary user assignment or active checkout. Its configured status label stays intact; when the asset is no longer assigned, Status returns to that label.
 
+Inventory JSON records also carry orthogonal `deployment_status`, `condition`, and `is_archived` fields. Deployment values are `In Use`, `In Stock`, `Workshop`, `Retired`, and `Disposed`; condition values are `Good`, `Needs Repair`, `End of Life`, and `Unknown`. The one-time migration is available at `migrations/migrate_inventory_status_json.py`; it is idempotent, skips records with an existing deployment status, backs up the SQLite database before applying, writes `migration_log.json`, and records unmapped legacy labels in the `migration_errors` table. Preview with `python3 migrations/migrate_inventory_status_json.py --dry-run`; apply with `python3 migrations/migrate_inventory_status_json.py --apply`.
+
 ### Asset checkout and check-in
 
-Use **Checkout** on an inventory row and select the receiving staff member from the Users list. Their name, email, country, and location are taken from the directory; record the checkout date and time, optional expected return date, and notes. Use **Check in** when it is returned; the return event records who checked it in and when, including the check-in time. The checkout and check-in forms use the standard styled form controls for a clean, consistent dialog layout. **History** shows all handovers for that asset, newest first. Action buttons show **Checked out** while assigned and **Checked in** after a recorded return. Overdue returns are highlighted and counted above the inventory.
+Use **Checkout** on an inventory row and search for a receiving staff member by name or email. Selecting either fills in the other field; checkout must match a user in the Users directory or its inventory/history-derived options. Their country and location are taken from the directory; record the checkout date and time, optional expected return date, and notes. Use **Check in** when it is returned; search by name or email to record who checked it in and when, including the check-in time. Checking in an inventory device assigned through its Primary user field also records a check-in history event. **History** shows all handovers for that asset, newest first. Action buttons show **Checked out** while assigned and **Checked in** after a recorded return. Overdue returns are highlighted and counted above the inventory.
 
-If an inventory row has a **Primary user email address** (or Primary user UPN), it is treated as already assigned: its status shows **Checked out**, the primary user is shown as custodian, and **Checkout** is disabled. **Check in** is enabled for assigned assets; checking in clears the Primary user assignment and returns the device to available. The Primary user email also serves as the current custodian, using the display name when one is recorded. Clear the primary-user fields in **Edit** before checking out an asset that was assigned this way (or check the device in first).
+If an inventory row has a **Primary user email address** (or Primary user UPN), it is treated as already assigned: its status shows **Checked out**, the primary user is shown as custodian, and **Checkout** is disabled. **Check in** is enabled for assigned assets; checking in clears the Primary user assignment and returns the device to available. The Primary user name and email fields in **Edit** are searchable and fill one another when a directory match is selected. The Primary user email also serves as the current custodian, using the display name when one is recorded. Clear the primary-user fields in **Edit** before checking out an asset that was assigned this way (or check the device in first).
 
 Checkout and check-in events are stored as a separate, ordered history in SQLite and keyed to the normalized serial number. A valid Device ID is used only when a serial number is unavailable; placeholder IDs such as `N/A` are ignored. This prevents unrelated serials from sharing custody status when an import uses a placeholder Device ID. Re-importing or editing inventory does not replace custody records. Checkout status and events are not written into inventory CSV exports. An event remains in SQLite if its inventory row is later removed; restore the inventory record to see the associated device again. The server rejects a second active checkout for a serial until the current checkout is checked in.
 
@@ -238,11 +244,13 @@ The tests use temporary SQLite databases and do not need your local inventory da
 - `index.html` — page structure, navigation, and script loading
 - `main.css` — shared styling and responsive layouts
 - `app.js` — module navigation, SQLite-backed storage, and shared UI helpers
+- `constants.js`, `constants.py` — shared deployment status, condition, disposition-method, and badge-colour lists (keep in sync)
 - `dashboard.js`, `dashboard_metrics.py` — dashboard UI and calculations
-- `inventory.js` — inventory, CSV import/export, warranty matching, custody, and backup/restore actions
+- `inventory.js` — inventory, filters, CSV import/export, warranty matching, custody, status fields, and backup/restore actions
 - `replacement-history.js` — replacement history UI, validation, matching, and CSV transfer
-- `server.py` — local HTTP server and SQLite API
-- `test_server.py`, `test_dashboard_metrics.py` — automated tests
+- `server.py` — local HTTP server, SQLite API, and status-field validation
+- `migrations/migrate_inventory_status_json.py` — idempotent one-time migration for deployment status, condition, and archive fields
+- `test_server.py`, `test_dashboard_metrics.py`, `test_status_validation.py` — automated tests
 - `start-linux.sh`, `start-windows.bat` — convenience launchers
 
 ## Security and deployment notes

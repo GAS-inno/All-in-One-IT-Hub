@@ -370,9 +370,10 @@ App.registerModule('replacements', (() => {
     return `<datalist id="${escapeHtml(listId)}">${options.join('')}</datalist>`;
   }
 
-  function openForm(id = '') {
+  function openForm(id = '', options = {}) {
     const existing = id ? records.find((record) => record['Replacement ID'] === id) : null;
     if (id && !existing) return;
+    const afterSave = typeof options.afterSave === 'function' ? options.afterSave : null;
     const record = existing || {
       'Replacement ID': newId(),
       'Staff Member Name': '',
@@ -388,6 +389,7 @@ App.registerModule('replacements', (() => {
     let selectedStaffUserId = '';
     let selectedNewSerial = existing ? record['New Device Serial Number'] : '';
     let selectedOldDevice = null;
+    let selectedStaff = null;
     let oldDeviceNeedsChoice = false;
     let staffDeviceCount = null;
     Modal.open({
@@ -447,7 +449,6 @@ App.registerModule('replacements', (() => {
           { input: staffEmail, field: 'email', suggestions: document.getElementById('replacementStaffEmailSuggestions'), message: document.getElementById('replacementStaffEmailMessage') }
         ];
         const manualOverrides = new Set();
-        let selectedStaff = null;
         let userTimer = null;
         let deviceTimer = null;
         let oldDeviceTimer = null;
@@ -655,79 +656,82 @@ App.registerModule('replacements', (() => {
         }
         updateWarning();
       },
-      onConfirm: async () => {
-        const form = document.getElementById('replacementForm');
-        const staffName = form.elements.namedItem('Staff Member Name');
-        const newSerial = form.elements.namedItem('New Device Serial Number');
-        if (!form.reportValidity()) return;
-        if (!selectedStaffUserId) {
-          Toast.show('Select a staff member from the User directory before saving.', 'error', 5000);
-          staffName.focus();
-          return;
-        }
-        if (!selectedNewSerial || serialKey(newSerial.value) !== serialKey(selectedNewSerial)) {
-          Toast.show('Select an available replacement device from inventory before saving.', 'error', 5000);
-          newSerial.focus();
-          return;
-        }
-        const data = new FormData(form);
-        const candidate = {};
-        COLUMNS.forEach((column) => {
-          candidate[column] = column === 'Replacement ID' ? record[column] : data.get(column);
-        });
-        const oldInput = form.elements.namedItem('Old Device Serial Number');
-        if (oldDeviceNeedsChoice || (oldInput.value.trim() && (!selectedOldDevice || serialKey(oldInput.value) !== serialKey(selectedOldDevice.serial)))) {
-          Toast.show('Select an old device from the assigned inventory suggestions, or clear the field if this is a new assignment.', 'error', 5000);
-          oldInput.focus();
-          return;
-        }
-        if (!oldInput.value.trim() && staffDeviceCount > 1) {
-          Toast.show('Select which assigned device is being replaced.', 'error', 5000);
-          oldInput.focus();
-          return;
-        }
-        if (selectedStaff && selectedOldDevice && selectedOldDevice.staff?.id !== selectedStaff.id) {
-          Toast.show('The old device is assigned to a different staff member.', 'error', 5000);
-          oldInput.focus();
-          return;
-        }
-        const checked = validateRecord(candidate, { requireStaffEmail: true, allowMissingOldDevice: true });
-        if (checked.errors.length) {
-          Toast.show(checked.errors[0], 'error', 5000);
-          return;
-        }
-        const updated = checked.record;
-        const otherRecords = records.filter((item) => item['Replacement ID'] !== record['Replacement ID']);
-        const duplicatePair = otherRecords.some((item) =>
-          serialKey(item['Old Device Serial Number']) === serialKey(updated['Old Device Serial Number'])
-          && serialKey(item['New Device Serial Number']) === serialKey(updated['New Device Serial Number']));
-        const alreadyReplaced = otherRecords.some((item) =>
-          serialKey(item['Old Device Serial Number']) === serialKey(updated['Old Device Serial Number']));
-        const warnings = [];
-        if (alreadyReplaced) warnings.push('This old device already has another replacement event.');
-        if (duplicatePair) warnings.push('This old/new serial-number pair already exists.');
-        if (warnings.length && !window.confirm(`${warnings.join('\n')}\n\nSave this record anyway?`)) return;
-        try {
-          const response = await fetch('/api/replacement-history/save', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ record: updated, staffUserId: selectedStaffUserId, existingId: existing ? record['Replacement ID'] : '' })
-          });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || 'Could not save replacement record.');
-          App.store.cache.set('inventory', result.inventory);
-          App.store.cache.set('replacementHistory', result.replacementHistory);
-          records = result.replacementHistory;
-          loaded = true;
-        } catch (error) {
-          Toast.show(error.message || 'Could not save replacement record.', 'error', 6000);
-          return;
-        }
-        Modal.close();
-        render(document.getElementById('moduleContainer'));
-        Toast.show(existing ? 'Replacement record updated and saved to SQLite.' : 'Replacement record added and saved to SQLite.', 'success', 5000);
-      }
+      onConfirm: () => saveReplacementRecord()
     });
+
+    async function saveReplacementRecord() {
+      const form = document.getElementById('replacementForm');
+      const staffName = form.elements.namedItem('Staff Member Name');
+      const newSerial = form.elements.namedItem('New Device Serial Number');
+      if (!form.reportValidity()) return;
+      if (!selectedStaffUserId) {
+        Toast.show('Select a staff member from the User directory before saving.', 'error', 5000);
+        staffName.focus();
+        return;
+      }
+      if (!selectedNewSerial || serialKey(newSerial.value) !== serialKey(selectedNewSerial)) {
+        Toast.show('Select an available replacement device from inventory before saving.', 'error', 5000);
+        newSerial.focus();
+        return;
+      }
+      const data = new FormData(form);
+      const candidate = {};
+      COLUMNS.forEach((column) => {
+        candidate[column] = column === 'Replacement ID' ? record[column] : data.get(column);
+      });
+      const oldInput = form.elements.namedItem('Old Device Serial Number');
+      if (oldDeviceNeedsChoice || (oldInput.value.trim() && (!selectedOldDevice || serialKey(oldInput.value) !== serialKey(selectedOldDevice.serial)))) {
+        Toast.show('Select an old device from the assigned inventory suggestions, or clear the field if this is a new assignment.', 'error', 5000);
+        oldInput.focus();
+        return;
+      }
+      if (!oldInput.value.trim() && staffDeviceCount > 1) {
+        Toast.show('Select which assigned device is being replaced.', 'error', 5000);
+        oldInput.focus();
+        return;
+      }
+      if (selectedStaff && selectedOldDevice && selectedOldDevice.staff?.id !== selectedStaff.id) {
+        Toast.show('The old device is assigned to a different staff member.', 'error', 5000);
+        oldInput.focus();
+        return;
+      }
+      const checked = validateRecord(candidate, { requireStaffEmail: true, allowMissingOldDevice: true });
+      if (checked.errors.length) {
+        Toast.show(checked.errors[0], 'error', 5000);
+        return;
+      }
+      const updated = checked.record;
+      const otherRecords = records.filter((item) => item['Replacement ID'] !== record['Replacement ID']);
+      const duplicatePair = otherRecords.some((item) =>
+        serialKey(item['Old Device Serial Number']) === serialKey(updated['Old Device Serial Number'])
+        && serialKey(item['New Device Serial Number']) === serialKey(updated['New Device Serial Number']));
+      const alreadyReplaced = otherRecords.some((item) =>
+        serialKey(item['Old Device Serial Number']) === serialKey(updated['Old Device Serial Number']));
+      const warnings = [];
+      if (alreadyReplaced) warnings.push('This old device already has another replacement event.');
+      if (duplicatePair) warnings.push('This old/new serial-number pair already exists.');
+      if (warnings.length && !window.confirm(`${warnings.join('\n')}\n\nSave this record anyway?`)) return;
+      try {
+        const response = await fetch('/api/replacement-history/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ record: updated, staffUserId: selectedStaffUserId, existingId: existing ? record['Replacement ID'] : '' })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Could not save replacement record.');
+        App.store.cache.set('inventory', result.inventory);
+        App.store.cache.set('replacementHistory', result.replacementHistory);
+        records = result.replacementHistory;
+        loaded = true;
+      } catch (error) {
+        Toast.show(error.message || 'Could not save replacement record.', 'error', 6000);
+        return;
+      }
+      Modal.close();
+      if (afterSave) afterSave();
+      else render(document.getElementById('moduleContainer'));
+      Toast.show(existing ? 'Replacement record updated and saved to SQLite.' : 'Replacement record added and saved to SQLite.', 'success', 5000);
+    }
   }
 
   function viewRecord(id) {
@@ -930,6 +934,7 @@ App.registerModule('replacements', (() => {
 
   return {
     render,
+    openForm,
     summaryForSerial,
     getRecords() { return records.map((record) => ({ ...record })); },
     onCountryChange() {}
