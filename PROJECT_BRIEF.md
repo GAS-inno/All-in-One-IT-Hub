@@ -12,14 +12,14 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 - Backend: Python standard library (`http.server`, `sqlite3`); no external Python packages.
 - Storage: SQLite database at the platform's local application-data directory. `server.py` prints the active path and `/api/health` reports it.
 - Dashboard charts use Chart.js from jsDelivr; internet access is needed for those charts.
-- Start from the project directory with `python3 server.py` (Linux/macOS) or `py server.py` (Windows). The server binds to `127.0.0.1:8000`.
+- Start from the project directory with `python3 server.py` (Linux/macOS) or `py server.py` (Windows). The server binds to `127.0.0.1:8000` by default; `NEXIT_HOST` and `NEXIT_PORT` can override the bind for trusted private-network access (e.g. Tailscale). NexIT has no authentication.
 
 ## Data ownership and rules
 
 - `inventory_devices` is the current device record. Inventory imports merge by normalized serial number and preserve saved values for blank or null-like cells.
 - `warranty_records` stores warranty source data matched to inventory by serial.
 - `users` is the managed staff directory. User IDs are stable keys; names and emails are canonicalized from this table when replacement records are saved.
-- User records include an `Account Active` value (`YES` or `NO`). CSV imports and inventory-inferred users classify an email as `NO` when its local part starts with at least 24 hexadecimal characters; other email formats classify as `YES`. Users can set this value in the add and edit forms. This is a format heuristic, not a live directory lookup.
+- User records include an `Account Active` value (`YES` or `NO`). A user CSV may supply it directly; blank or absent values, plus inventory-inferred users, classify an email as `NO` when its local part starts with at least 24 hexadecimal characters, and other email formats classify as `YES`. Users can set this value in the add and edit forms. This is a format heuristic, not a live directory lookup.
 - The Users list summary reports the filtered user count, `YES` and `NO` account totals, and assigned serial count.
 - `checkout_history` stores ordered checkout/check-in events separately from device records. Normalized serial is the asset key; a non-placeholder Device ID is used only when serial is unavailable.
 - Inventory primary-user, checkout, and check-in forms search staff by name or email and fill the linked identity field on selection. Checking in an asset assigned only through its Primary user fields clears that assignment and records a check-in event in `checkout_history`.
@@ -74,6 +74,6 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 
 - Keep operational CSV files, exports, and SQLite databases out of version control.
 - Keep `constants.js` and `constants.py` in sync whenever deployment status, condition, disposition method, or badge colours change.
-- The app has no authentication, roles, audit log, or multi-user synchronization. Keep it on the local machine; do not expose the server to a shared network without adding appropriate access controls and changing the deployment design. The default bind is `127.0.0.1:8000`; `NEXIT_HOST`/`NEXIT_PORT` may override it for local testing.
+- The app has no authentication, roles, audit log, or multi-user synchronization. Keep it on the local machine by default. `NEXIT_HOST`/`NEXIT_PORT` may override the bind for trusted private-network access (for example, Tailscale), but do not expose the server to the internet or untrusted networks without adding appropriate access controls and changing the deployment design.
 - Run the Python test suite with `python3 -m unittest -v` (Windows: `py -m unittest -v`).
 - When changing UI scripts or styles, update their cache version in `index.html`. Update this brief when a durable data rule, API contract, or major module responsibility changes. Keep user-facing setup and workflow instructions in `README.md`.

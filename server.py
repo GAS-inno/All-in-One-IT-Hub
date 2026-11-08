@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
-from constants import CONDITION, DEPLOYMENT_STATUS, DISPOSITION_METHOD
+from constants import CONDITION, DEPLOYMENT_STATUS, DISPOSITION_METHOD, OLD_DEVICE_OUTCOME
 from dashboard_metrics import build_dashboard, filter_options, matching_record_indexes
 
 ROOT = Path(__file__).resolve().parent
@@ -791,6 +791,25 @@ def _save_replacement_record(connection: sqlite3.Connection, payload: Any) -> in
             same_staff = old_identity.get("email", "").strip().casefold() == email.casefold()
         if not same_staff:
             raise ValueError("The old device is not assigned to the selected staff member.")
+
+        outcome = _as_text(record, "old_device_outcome").strip()
+        if outcome:
+            if outcome not in OLD_DEVICE_OUTCOME:
+                raise ValueError(f"Invalid old device outcome: {outcome}.")
+            outcome_effects = {
+                "Re-issued to another user": ("In Stock", None),
+                "Sent to workshop for repair": ("Workshop", "Needs Repair"),
+                "Awaiting re-imaging": ("Workshop", "Unknown"),
+                "Retired pending disposal": ("Retired", "End of Life"),
+                "Disposed": ("Disposed", "End of Life"),
+            }
+            new_status, new_condition = outcome_effects[outcome]
+            old_device["deployment_status"] = new_status
+            if new_condition is not None:
+                old_device["condition"] = new_condition
+            _validate_device_status(old_device)
+            connection.execute("UPDATE inventory_devices SET data_json=? WHERE id=?",
+                               (json.dumps(old_device, ensure_ascii=False, separators=(",", ":")), old_target["id"]))
     else:
         active_checkouts = _active_checkout_serials(connection)
         latest_events = {_serial_key(_asset_serial(event)): event for event in _read_checkout_history(connection)

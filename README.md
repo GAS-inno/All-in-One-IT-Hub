@@ -2,7 +2,7 @@
 
 A local IT asset inventory and operations dashboard built with HTML, CSS, vanilla JavaScript, Python's standard library, and SQLite. It supports Intune-style inventory CSV import, warranty matching, user-to-asset views, durable asset checkout/check-in history, device replacements, filtering, analytics, and CSV exports.
 
-> **Local-use application:** The server listens on `127.0.0.1` and SQLite is designed for one local app instance/user at a time. This is not a hosted, multi-user service. Do not expose it to the internet or a shared network without adding authentication, authorization, and an appropriate shared database/API.
+> **Local-use application:** By default the server listens on `127.0.0.1` and SQLite is designed for one local app instance/user at a time. This is not a hosted, multi-user service. Do not expose it to the internet or an untrusted network. If you need access from another device on a private network (for example, over Tailscale), you can bind to another interface with `NEXIT_HOST`, but the app still has no authentication or authorization — only do this on networks you trust.
 
 ## Requirements
 
@@ -47,6 +47,16 @@ The app uses Python's built-in `http.server` and `sqlite3` modules.
 
 Do not use `python -m http.server` as the normal startup method; the app needs its own SQLite API as well as static file serving. If port 8000 is already in use, stop the other app using that port before starting this one.
 
+#### Access from another device (optional, private network only)
+
+By default NexIT is reachable only on the same machine at `http://localhost:8000`. To reach it from another device on a trusted private network such as Tailscale, start the server with `NEXIT_HOST=0.0.0.0` (and optionally `NEXIT_PORT`):
+
+```sh
+NEXIT_HOST=0.0.0.0 python3 server.py
+```
+
+Then open `http://<this-machine-ip>:8000` from the other device (for Tailscale, use this machine's Tailscale IP, e.g. from `tailscale ip -4`). NexIT has no sign-in or access controls, so do not use this on untrusted networks. Use the default `127.0.0.1` bind when you only need local access.
+
 The server binds to `127.0.0.1:8000` by default. For local testing you can set `NEXIT_PORT` (and optionally `NEXIT_HOST`) before starting it, for example `NEXIT_PORT=8080 python3 server.py`. Keep the default host for normal use; changing `NEXIT_HOST` exposes the unauthenticated app to other machines and is not recommended.
 
 ## First run and local data
@@ -85,7 +95,7 @@ When merging an import, NexIT matches each row to the existing device by normali
 
 The inventory supports Laptop, Firewall, UPS, AccessPoint, and Switch device types in the same SQLite database. Use the device-type links below **Inventory** to filter the list; a link is shown only while at least one device of that type exists. Use **Inventory** to see all types. Existing records without an asset type remain laptops. Use **+ Add device** to choose a type and enter common details such as serial number, manufacturer, model, country, and location, plus network or UPS fields where relevant. The form puts core asset identity and status first, separates assignment and country/location, and groups less common technical and warranty fields into expandable sections. CSV imports can include an `Asset type` column, or a `Device type` column containing one of the supported categories; without one they are treated as the currently selected type, or Laptop when viewing all inventory.
 
-The sidebar **Download CSV Template** item opens a template-samples modal with a preview of each template (laptop inventory and user list) before downloading it.
+The sidebar **Download CSV Template** item opens a template-samples modal with a preview of each template (inventory and user list) before downloading it.
 
 **Fixed Asset Number** is optional. Enter the Finance/SAP book asset number when known. Hover over the column heading or field label for guidance; if the number is unavailable, check with the Finance asset manager. The value is retained in SQLite and included in inventory CSV imports and exports.
 
@@ -107,9 +117,9 @@ Use **Backup Database** to download a consistent SQLite snapshot containing inve
 
 ### Users and assigned assets
 
-Open **Users** to maintain the staff directory used by asset checkout. Choose **+ Add user** to enter a name, optional email, Account Active status, country, and location, or **Import users CSV** to load multiple users. CSV requires a `Name`, `Full Name`, `User Name`, or `Staff Name` column; `Email`, `Country`, and `Location` are optional. Imports merge by email (or by name when email is blank) and update matching users. The list is stored in SQLite and is included in database backups.
+Open **Users** to maintain the staff directory used by asset checkout. Choose **+ Add user** to enter a name, optional email, Account Active status, country, and location, or **Import users CSV** to load multiple users. CSV requires a `Name`, `Full Name`, `User Name`, or `Staff Name` column; `Email`, `Account Active`, `Country`, and `Location` are optional. Imports merge by email (or by name when email is blank) and update matching users. The list is stored in SQLite and is included in database backups.
 
-Each Users record has an **Account Active** value of **YES** or **NO**, which can be set when adding or editing users. CSV imports classify addresses whose local part begins with a 24-character or longer hexadecimal prefix as **NO** (for example, an exported object ID concatenated with a username); other imported email formats are marked **YES**. Users inferred from inventory primary-user fields use the same email rule. This is a format-based classification, not a live directory account check.
+Each Users record has an **Account Active** value of **YES** or **NO**, which can be set when adding or editing users or supplied in an `Account Active` CSV column. When that column is blank or absent, CSV imports classify addresses whose local part begins with a 24-character or longer hexadecimal prefix as **NO** (for example, an exported object ID concatenated with a username); other imported email formats are marked **YES**. Users inferred from inventory primary-user fields use the same email rule. This is a format-based classification, not a live directory account check.
 
 The directory also includes users inferred from imported Primary user fields and active checkout records, so existing inventory users remain available for checkout selection. User profiles list each assigned serial number once; one user may have multiple assets. A current checkout takes precedence over the imported Primary user in the directory until the asset is checked in.
 
@@ -182,7 +192,7 @@ Required headers:
 - `Device name`
 - `Serial number`
 
-`Device ID`, `Asset type`, and `Fixed Asset Number` are optional. Add an optional `Asset type` column (recommended) or a `Device type` column containing one of `Laptop`, `Firewall`, `UPS`, `AccessPoint`, or `Switch` to classify each imported record. Other columns, including `Fixed Asset Number`, are retained where provided. The `Total storage` CSV header is accepted as an import source and converted from bytes to `Total storage (GB)`; only the GB field is shown and exported.
+`Device ID`, `Asset type`, and `Fixed Asset Number` are optional. Add an optional `Asset type` column (recommended) or a `Device type` column containing one of `Laptop`, `Firewall`, `UPS`, `AccessPoint`, or `Switch` to classify each imported record. Other columns, including `Fixed Asset Number`, `Country`, `IntuneGroup.GroupName`, `IntuneGroup.GroupTag`, `Total storage (GB)`, `Free storage` (bytes), `Firmware version`, `UPS Capacity (VA)`, `Battery replacement date`, and `Last check-in`, are retained where provided. The `Total storage` CSV header is accepted as an import source and converted from bytes to `Total storage (GB)`; only the GB field is shown and exported. `Deployment Status` and `Condition` are imported into the device status fields and must use a value from the lists in `constants.js`.
 
 Import first opens a column review listing recognized and unrecognized headers. Recognized columns are selected by default; uncheck optional columns you do not want to import. **Serial number** is required and remains selected. If you leave the selection unchanged, all recognized data is imported. No data is saved until you choose **Proceed to import**. If duplicate serial numbers are found, a second dialog lets you merge into the existing device or keep separate devices with `-1`, `-2`, and later suffixes. Cancel either dialog to stop without importing. After saving, a report summarizes the result.
 
@@ -198,7 +208,7 @@ Optional headers: `Warranty Start Date`, `Warranty End Date`.
 
 Required header: `Name`, `Full Name`, `User Name`, or `Staff Name`.
 
-Optional headers: `Email` (or `Email Address` / `Staff Email`), `Country`, and `Location` (or `Office` / `Site`). Rows are merged into the saved Users list by email, or by name when no email is provided.
+Optional headers: `Email` (or `Email Address` / `Staff Email`), `Account Active` (`YES` or `NO`), `Country`, and `Location` (or `Office` / `Site`). `User ID` is generated by the app and is not imported. Rows are merged into the saved Users list by email, or by name when no email is provided. If `Account Active` is blank or absent, the email-format heuristic below is used.
 
 ### Replacement history CSV
 
@@ -212,7 +222,7 @@ The replacement CSV contains only replacement-event fields, not a copy of the in
 6. Replacement Date
 7. Replacement Reason
 8. Old Device Condition
-9. Lifecycle Status
+9. Old Device Outcome
 10. Remarks
 
 The app validates these fields during import and supports commas, quotes, and newlines in remarks. CSV import/export is for transfer; SQLite is the app's working store. The add/edit form behavior is described under **Device Replacement History** above.
@@ -256,7 +266,7 @@ The tests use temporary SQLite databases and do not need your local inventory da
 ## Security and deployment notes
 
 - The app has no sign-in, user roles, multi-user synchronization, or audit log.
-- The local server binds to `127.0.0.1`. Do not change this or expose the server to a shared network without first implementing appropriate access controls and a production server/database design.
+- The local server binds to `127.0.0.1` by default. `NEXIT_HOST` and `NEXIT_PORT` can override the bind address/port for trusted private-network access (for example, Tailscale), but NexIT still has no authentication, authorization, or production hardening — do not expose it to the internet or untrusted networks.
 - Keep the SQLite database, exports, and Intune source files private. Never commit real user, device, warranty, or replacement data to a public repository.
 - Database backups are user-initiated downloads; there is no automatic or off-device backup service. Establish a regular backup schedule and store copies separately.
 - GitHub Pages cannot run this app by itself because inventory and replacement changes require the Python/SQLite API.
