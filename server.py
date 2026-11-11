@@ -224,6 +224,25 @@ def _create_database_backup() -> Path:
         raise
 
 
+DATABASE_DATA_TABLES = (
+    "inventory_devices",
+    "warranty_records",
+    "replacement_history",
+    "checkout_history",
+    "users",
+    "asset_status_labels",
+    "asset_field_options",
+)
+
+
+def _clear_database(connection: sqlite3.Connection) -> int:
+    cleared = 0
+    for table in DATABASE_DATA_TABLES:
+        cursor = connection.execute(f"DELETE FROM {table}")
+        cleared += cursor.rowcount or 0
+    return cleared
+
+
 def _validate_database_backup(path: Path) -> None:
     if not path.is_file() or path.stat().st_size == 0:
         raise ValueError("The selected backup file is empty or missing.")
@@ -1214,6 +1233,15 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
             finally:
                 if upload_path is not None:
                     upload_path.unlink(missing_ok=True)
+            return
+        if self.path == "/api/clean-database":
+            try:
+                with _DB_LOCK, database_connection() as connection:
+                    cleared = _clear_database(connection)
+                self._send_json(200, {"cleared": cleared})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Database clear failed: %s", error)
+                self._send_json(500, {"error": "Could not clear the SQLite database."})
             return
         if self.path == "/api/checkin-primary-user":
             try:

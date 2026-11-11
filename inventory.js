@@ -462,6 +462,31 @@ App.registerModule('inventory', (() => {
     });
   }
 
+  function confirmClearDatabase() {
+    Modal.open({
+      title: 'Clean database?',
+      confirmText: 'Clean database',
+      onOpen: () => { document.getElementById('modalConfirm').className = 'btn btn-danger'; },
+      body: `<p><strong>This permanently deletes all NexIT data</strong> currently stored in the local SQLite database, including inventory, warranty, replacement history, checkout/check-in history, and users.</p>
+        <p>The app will reload afterwards. Download a backup first if you want to keep a copy.</p>`,
+      onConfirm: async () => {
+        const confirmButton = document.getElementById('modalConfirm');
+        confirmButton.disabled = true;
+        try {
+          const response = await fetch('/api/clean-database', { method: 'POST' });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+          Modal.close();
+          Toast.show(`Database cleared. Removed ${result.cleared ?? 0} records. Reloading NexIT…`, 'success', 5000);
+          setTimeout(() => window.location.reload(), 500);
+        } catch (error) {
+          confirmButton.disabled = false;
+          Toast.show(`Could not clear database: ${error.message || error}`, 'error', 7000);
+        }
+      }
+    });
+  }
+
   function getVisibleColumns() {
     try {
       const saved = JSON.parse(localStorage.getItem('nexit_inventory_layout') || 'null');
@@ -2478,6 +2503,7 @@ App.registerModule('inventory', (() => {
         <div class="inventory-settings-menu" aria-label="More inventory tools">
           <button type="button" class="inventory-settings-action" id="backupDatabaseBtn">Backup Database</button>
           <button type="button" class="inventory-settings-action" id="restoreDatabaseBtn">Restore Database</button>
+          <button type="button" class="inventory-settings-action" id="clearDatabaseBtn">Clean database</button>
           <button type="button" class="inventory-settings-action" id="exportInventoryBtn">Export CSV</button>
           <button type="button" class="inventory-settings-action" id="importWarrantyBtn">Import Warranty</button>
           <button type="button" class="inventory-settings-action" id="importInventoryBtn">Import CSV</button>
@@ -2581,6 +2607,7 @@ App.registerModule('inventory', (() => {
       input.value = '';
       input.click();
     });
+    settingsHost.querySelector('#clearDatabaseBtn').addEventListener('click', () => confirmClearDatabase());
     container.querySelector('#databaseBackupInput').addEventListener('change', (event) => {
       confirmDatabaseRestore(event.target.files?.[0]);
     });
