@@ -706,13 +706,14 @@ App.registerModule('inventory', (() => {
     return resolveStatusLabelName(derived);
   }
 
-  function getWarrantyAge(startDateValue, endDateValue) {
+  function getWarrantyAge(startDateValue) {
     const start = parseDateValue(startDateValue);
-    const end = parseDateValue(endDateValue);
-    if (!start || !end) return '—';
+    if (!start) return '—';
+    const end = new Date();
     const totalMonths = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
-    const years = Math.max(0, Math.floor(totalMonths / 12));
-    const months = Math.max(0, totalMonths - years * 12);
+    const clampedMonths = Math.max(0, totalMonths);
+    const years = Math.floor(clampedMonths / 12);
+    const months = clampedMonths - years * 12;
     return `${years}y ${months}m`;
   }
 
@@ -2391,7 +2392,7 @@ App.registerModule('inventory', (() => {
           const existingUser = managedUsers.find((user) => (userEmail && String(user.Email || '').trim().toLowerCase() === userEmail.toLowerCase()) || (userName && String(user.Name || '').trim().toLowerCase() === userName.toLowerCase()));
           if ((userName || userEmail) && !existingUser && userName) {
             const newUser = {
-              UserID: globalThis.crypto?.randomUUID?.() || `user-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              UserID: `usr-${globalThis.crypto?.randomUUID?.() || `user-${Date.now()}-${Math.random().toString(36).slice(2)}`}`,
               Name: userName,
               Email: userEmail,
               Country: updated.Country || '',

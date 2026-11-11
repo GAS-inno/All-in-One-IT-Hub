@@ -56,7 +56,8 @@ App.registerModule('users', (() => {
   }
 
   function makeUserId() {
-    return globalThis.crypto?.randomUUID?.() || `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return `usr-${suffix}`;
   }
 
   function detectStaffType(name) {

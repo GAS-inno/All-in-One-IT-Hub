@@ -1,6 +1,6 @@
 # Project Brief
 
-> Last updated: 2026-11-10
+> Last updated: 2026-11-11
 
 ## Purpose
 
@@ -8,7 +8,7 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 
 ## Architecture
 
-- Frontend: vanilla JavaScript, HTML, and CSS; no build step.
+- Frontend: vanilla JavaScript, HTML, and CSS; no build step. UI typography uses Inter loaded from Google Fonts.
 - Backend: Python standard library (`http.server`, `sqlite3`); no external Python packages.
 - Storage: SQLite database at the platform's local application-data directory. `server.py` prints the active path and `/api/health` reports it.
 - Dashboard charts use Chart.js from jsDelivr; internet access is needed for those charts.
