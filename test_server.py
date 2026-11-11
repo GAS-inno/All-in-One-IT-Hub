@@ -198,19 +198,19 @@ class SQLitePersistenceTests(unittest.TestCase):
 
     def test_users_round_trip_with_country_and_location(self) -> None:
         users = [
-            {"User ID": "USER-1", "Name": "Alex User", "Email": "alex@example.com", "Country": "Singapore", "Location": "HQ"},
-            {"User ID": "USER-2", "Name": "Sam User", "Email": "", "Country": "Australia", "Location": "Sydney"},
+            {"UserID": "USER-1", "Name": "Alex User", "Email": "alex@example.com", "Country": "Singapore", "Location": "HQ"},
+            {"UserID": "USER-2", "Name": "Sam User", "Email": "", "Country": "Australia", "Location": "Sydney"},
         ]
         _replace_users(self.connection, users)
         self.assertEqual(_read_users(self.connection), users)
 
     def test_users_reject_missing_name_and_duplicate_email(self) -> None:
-        with self.assertRaisesRegex(ValueError, "User ID and Name"):
-            _replace_users(self.connection, [{"User ID": "USER-1", "Name": ""}])
+        with self.assertRaisesRegex(ValueError, "UserID and Name"):
+            _replace_users(self.connection, [{"UserID": "USER-1", "Name": ""}])
         with self.assertRaisesRegex(ValueError, "Duplicate user email"):
             _replace_users(self.connection, [
-                {"User ID": "USER-1", "Name": "Alex", "Email": "alex@example.com"},
-                {"User ID": "USER-2", "Name": "Alex 2", "Email": "ALEX@example.com"},
+                {"UserID": "USER-1", "Name": "Alex", "Email": "alex@example.com"},
+                {"UserID": "USER-2", "Name": "Alex 2", "Email": "ALEX@example.com"},
             ])
 
     def test_checkout_history_rejects_multiple_active_staff_for_one_serial(self) -> None:
@@ -378,7 +378,7 @@ class SQLiteApiTests(unittest.TestCase):
 
     def test_users_api_round_trip(self) -> None:
         users = [{
-            "User ID": "USER-1", "Name": "Alex User", "Email": "alex@example.com",
+            "UserID": "USER-1", "Name": "Alex User", "Email": "alex@example.com",
             "Country": "Singapore", "Location": "HQ",
         }]
         status, bootstrap = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
@@ -392,11 +392,11 @@ class SQLiteApiTests(unittest.TestCase):
         self.assertEqual(reloaded["users"], users)
 
     def test_users_api_rejects_duplicate_emails_without_replacing_existing(self) -> None:
-        existing = [{"User ID": "USER-1", "Name": "Existing", "Email": "existing@example.com"}]
+        existing = [{"UserID": "USER-1", "Name": "Existing", "Email": "existing@example.com"}]
         self.assertEqual(self.request_json("/api/users", "PUT", existing)[0], 200)
         status, result = self.request_json("/api/users", "PUT", [
-            {"User ID": "USER-2", "Name": "Alex", "Email": "same@example.com"},
-            {"User ID": "USER-3", "Name": "Sam", "Email": "SAME@example.com"},
+            {"UserID": "USER-2", "Name": "Alex", "Email": "same@example.com"},
+            {"UserID": "USER-3", "Name": "Sam", "Email": "SAME@example.com"},
         ])
         self.assertEqual(status, 400)
         self.assertIn("Duplicate user email", result["error"])
@@ -439,7 +439,7 @@ class SQLiteApiTests(unittest.TestCase):
             "Event date": "2026-11-01", "Staff name": "Alex User",
         }]
         users = [{
-            "User ID": "USER-1", "Name": "Alex User", "Email": "alex@example.com",
+            "UserID": "USER-1", "Name": "Alex User", "Email": "alex@example.com",
             "Country": "Singapore", "Location": "HQ",
         }]
         status_labels = [{"id": "ready", "name": "Ready to Deploy", "type": "Deployable"}]

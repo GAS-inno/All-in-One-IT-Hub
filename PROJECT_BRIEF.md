@@ -1,6 +1,6 @@
 # Project Brief
 
-> Last updated: 2026-11-08
+> Last updated: 2026-11-10
 
 ## Purpose
 
@@ -18,19 +18,20 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 
 - `inventory_devices` is the current device record. Inventory imports merge by normalized serial number and preserve saved values for blank or null-like cells.
 - `warranty_records` stores warranty source data matched to inventory by serial.
-- `users` is the managed staff directory. User IDs are stable keys; names and emails are canonicalized from this table when replacement records are saved.
-- User records include an `Account Active` value (`YES` or `NO`). A user CSV may supply it directly; blank or absent values, plus inventory-inferred users, classify an email as `NO` when its local part starts with at least 24 hexadecimal characters, and other email formats classify as `YES`. Users can set this value in the add and edit forms. This is a format heuristic, not a live directory lookup.
+- `users` is the managed staff directory. User IDs are stable keys; names and emails are canonicalized from this table when replacement records are saved. User IDs are imported from a `User ID` CSV column when present; otherwise a generated ID is assigned.
+- User records include an `Account Active` value (`YES` or `NO`). A user CSV may supply it directly; when blank or absent, the value defaults to `YES`. Users can set this value in the add and edit forms. There is no automatic email-format classification.
+- A device is attached to a directory user only when the asset's Primary user UPN/email matches that user's Email (case-insensitive). Display names come from the user record or the asset's Primary user display name, never from an email address.
 - The Users list summary reports the filtered user count, `YES` and `NO` account totals, and assigned serial count.
 - `checkout_history` stores ordered checkout/check-in events separately from device records. Normalized serial is the asset key; a non-placeholder Device ID is used only when serial is unavailable.
 - Inventory primary-user, checkout, and check-in forms search staff by name or email and fill the linked identity field on selection. Checking in an asset assigned only through its Primary user fields clears that assignment and records a check-in event in `checkout_history`.
 - The Add/Edit device form follows a Snipe-IT-style structure: core asset identity and status first, assignment/location next, with technical and warranty details in expandable sections.
 - Country is editable in the device form and takes precedence over the country inferred from the device-name prefix; the country filter uses the saved value, with prefix inference as a fallback.
 - Inventory JSON has orthogonal `deployment_status`, `condition`, and `is_archived` fields. `migrations/migrate_inventory_status_json.py` maps status labels and assignment/check-in evidence, skips pre-migrated records, writes per-record `migration_log.json`, and stores unknown legacy labels in `migration_errors`.
-- Deployment status, condition, disposition method, and badge colours are canonical lists in `constants.py` and `constants.js`. `_validate_device_status` rejects unknown values and a non-boolean `is_archived`, requires condition `End of Life` when deployment status is `Disposed`, and allows `disposition_method` only for `Retired`/`Disposed` records with a known method. Keep the two constants files in sync.
-- The Inventory **Filter** drawer (Duplicate Only, Show Archived, Deployment Status, Condition) and its open/closed state are browser-local presentation preferences; they are not stored in SQLite.
+- Deployment status, condition, disposition method, and badge colours are canonical lists in `constants.py` and `constants.js`. Stored condition values are `Good`, `Needs Repair`, `End of Life`, `Unknown`; display labels are `Working`, `Faulty`, `Beyond Economic Repair`, `Not Assessed` (see `CONDITION_LABELS`). `_validate_device_status` rejects unknown stored values and a non-boolean `is_archived`, requires condition `End of Life` when deployment status is `Disposed`, and allows `disposition_method` only for `Retired`/`Disposed` records with a known method. Keep the two constants files in sync.
+- The Inventory **Filter** drawer (Duplicate Only, Show Archived, Deployment Status, Hardware Health) and its open/closed state are browser-local presentation preferences; they are not stored in SQLite.
 - `replacement_history` stores replacement events separately from current inventory. Inventory replacement fields are derived from those events.
 - `asset_status_labels` stores the configured device status and its characteristic (`Deployable`, `Undeployable`, `Pending`, or `Archived`). The displayed status is derived from the configured label and current assignment. Assigned deployable devices display as `Deployed`.
-- `asset_field_options` stores canonical and legacy values for device-level Replacement Status and Staff Member Lifecycle Status. Canonical values are `Not replaced`, `Replaced`, `Pending replacement`, `In progress` and `Active`, `Leaver`, `Contractor`, `Unknown`, respectively. Lifecycle status belongs to each device.
+- `asset_field_options` stores canonical and legacy values for device-level Replacement Status and Staff Employment Status. Canonical values are `Not replaced`, `Replaced`, `Pending replacement`, `In progress` and `Active`, `Leaver`, `Contractor`, `Unknown`, respectively. Employment status belongs to each device.
 - Raw Intune `Total storage` may be imported as bytes and converted to `Total storage (GB)`. Only the GB field is retained and presented.
 
 ## Replacement record behavior
@@ -65,6 +66,9 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 - `GET /api/users/search`: search managed users.
 - `GET /api/inventory/available-replacements`: search devices eligible for handout.
 - `GET /api/inventory/assigned-devices`: search active assigned devices, optionally filtered by user ID.
+- `POST /api/checkin-primary-user`: clear a Primary user assignment and append a check-in event.
+- `GET /api/field-options` and `POST /api/field-options`: read and add canonical/legacy field values.
+- `GET /api/health`: report the active SQLite database path and health.
 - `POST /api/replacement-history/save`: validate and save a replacement event and its new device assignment atomically.
 - `GET /api/dashboard` and `/api/dashboard/records`: dashboard metrics and drill-through rows.
 - Dataset APIs: `PUT /api/inventory` (validates deployment status, condition, disposition method, and `is_archived`), `/api/warranty`, `/api/replacement-history`, `/api/checkout-history`, `/api/users`, and `/api/status-labels`.

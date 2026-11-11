@@ -4,7 +4,22 @@ window.DEPLOYMENT_STATUS = ['In Use', 'In Stock', 'Workshop', 'Retired', 'Dispos
 
 window.CONDITION = ['Good', 'Needs Repair', 'End of Life', 'Unknown'];
 
+window.CONDITION_LABELS = {
+  'Good': 'Working',
+  'Needs Repair': 'Faulty',
+  'End of Life': 'Beyond Economic Repair',
+  'Unknown': 'Not Assessed',
+};
+
 window.DISPOSITION_METHOD = ['Recycle', 'Resell', 'Donate', 'Wipe & Hold'];
+
+window.OLD_DEVICE_OUTCOME = [
+  'Re-issued to another user',
+  'Sent to workshop for repair',
+  'Awaiting re-imaging',
+  'Retired pending disposal',
+  'Disposed',
+];
 
 window.BADGE_COLORS = {
   'In Use': '#3b82f6',

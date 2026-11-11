@@ -37,6 +37,7 @@ _DB_LOCK = threading.RLock()
 ASSET_FIELD_ENUMS = {
     "Replacement Status": ("Not replaced", "Replaced", "Pending replacement", "In progress"),
     "Staff Member Lifecycle Status": ("Active", "Leaver", "Contractor", "Unknown"),
+    "Asset type": ("Laptop", "Firewall", "UPS", "AccessPoint", "Switch"),
 }
 ELIGIBLE_HANDOUT_STATUS_NAMES = {
     "ready to deploy", "deployable", "available", "available for handover", "ready for handover",
@@ -99,7 +100,7 @@ def connect_database(path: Path | None = None) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_checkout_asset
             ON checkout_history(asset_key, position);
         CREATE TABLE IF NOT EXISTS users (
-            user_id TEXT PRIMARY KEY COLLATE NOCASE,
+            UserID TEXT PRIMARY KEY COLLATE NOCASE,
             position INTEGER NOT NULL,
             name TEXT NOT NULL DEFAULT '',
             email TEXT NOT NULL DEFAULT '',
@@ -124,6 +125,8 @@ def connect_database(path: Path | None = None) -> sqlite3.Connection:
     user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
     if "name" not in user_columns:
         connection.execute("ALTER TABLE users ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    if "UserID" not in user_columns and "user_id" in user_columns:
+        connection.execute("ALTER TABLE users RENAME COLUMN user_id TO UserID")
     connection.execute("UPDATE users SET name=COALESCE(json_extract(data_json, '$.Name'), '') WHERE name='' ")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_users_name ON users(name COLLATE NOCASE)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_users_email_value ON users(email COLLATE NOCASE)")
@@ -396,6 +399,7 @@ def _inventory_device_type(record: dict[str, Any]) -> str:
         "access point": "accesspoint",
         "switch": "switch",
         "switches": "switch",
+        "desktop": "desktop",
     }
     if value not in aliases and asset_type:
         raise ValueError(f"Unsupported device type: {value}.")
@@ -545,7 +549,7 @@ def _replace_users(connection: sqlite3.Connection, records: list[dict[str, Any]]
     user_ids: set[str] = set()
     emails: set[str] = set()
     for record in records:
-        user_id = _as_text(record, "User ID").strip()
+        user_id = _as_text(record, "UserID").strip()
         name = _as_text(record, "Name").strip()
         email = _as_text(record, "Email").strip()
         if not user_id or not name:
@@ -565,10 +569,10 @@ def _replace_users(connection: sqlite3.Connection, records: list[dict[str, Any]]
     for position, record in enumerate(records):
         email = _as_text(record, "Email").strip()
         connection.execute(
-            """INSERT INTO users (user_id, position, name, email, normalized_email, data_json)
+            """INSERT INTO users (UserID, position, name, email, normalized_email, data_json)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (
-                _as_text(record, "User ID").strip(),
+                _as_text(record, "UserID").strip(),
                 position,
                 _as_text(record, "Name").strip(),
                 email,
@@ -580,7 +584,7 @@ def _replace_users(connection: sqlite3.Connection, records: list[dict[str, Any]]
 
 def _read_users(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     return [json.loads(row["data_json"]) for row in connection.execute(
-        "SELECT data_json FROM users ORDER BY position, user_id"
+        "SELECT data_json FROM users ORDER BY position, UserID"
     )]
 
 
@@ -614,18 +618,18 @@ def _device_staff_identity(connection: sqlite3.Connection, device: dict[str, Any
     user_row = None
     if email:
         user_row = connection.execute(
-            "SELECT user_id, name, email FROM users WHERE normalized_email=? COLLATE NOCASE LIMIT 1",
+            "SELECT UserID, name, email FROM users WHERE normalized_email=? COLLATE NOCASE LIMIT 1",
             (email.strip().casefold(),),
         ).fetchone()
     if not user_row and name:
         matches = connection.execute(
-            "SELECT user_id, name, email FROM users WHERE name=? COLLATE NOCASE ORDER BY position LIMIT 2",
+            "SELECT UserID, name, email FROM users WHERE name=? COLLATE NOCASE ORDER BY position LIMIT 2",
             (name.strip(),),
         ).fetchall()
         if len(matches) == 1:
             user_row = matches[0]
     if user_row:
-        return {"id": user_row["user_id"], "name": user_row["name"], "email": user_row["email"]}
+        return {"id": user_row["UserID"], "name": user_row["name"], "email": user_row["email"]}
     return {"id": "", "name": name.strip(), "email": email.strip()}
 
 
@@ -741,7 +745,7 @@ def _save_replacement_record(connection: sqlite3.Connection, payload: Any) -> in
     if not user_id:
         raise ValueError("Choose a staff member from the User directory.")
     user_row = connection.execute(
-        "SELECT data_json FROM users WHERE user_id=? COLLATE NOCASE", (user_id,)
+        "SELECT data_json FROM users WHERE UserID=? COLLATE NOCASE", (user_id,)
     ).fetchone()
     if not user_row:
         raise ValueError("The selected staff member no longer exists. Search and select them again.")
@@ -950,12 +954,12 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
         if not query:
             return []
         pattern = _like_pattern(query)
-        sql = ("SELECT user_id, name, email FROM users "
+        sql = ("SELECT UserID, name, email FROM users "
                "WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\' "
                "OR LOWER(email) LIKE LOWER(?) ESCAPE '\\' "
-               "ORDER BY name COLLATE NOCASE, user_id LIMIT 40")
+               "ORDER BY name COLLATE NOCASE, UserID LIMIT 40")
         rows = self._logged_search_rows("users", sql, (pattern, pattern))
-        return [{"id": row["user_id"], "name": row["name"], "email": row["email"]} for row in rows]
+        return [{"id": row["UserID"], "name": row["name"], "email": row["email"]} for row in rows]
 
     def _search_available_replacements(self, query_string: str) -> list[dict[str, Any]]:
         params = parse_qs(query_string, keep_blank_values=False, max_num_fields=8)
@@ -1012,7 +1016,7 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
             latest_events = {_serial_key(_asset_serial(event)): event for event in _read_checkout_history(connection)
                              if _asset_serial(event)}
             if user_id:
-                user_sql = "SELECT 1 FROM users WHERE user_id=? COLLATE NOCASE"
+                user_sql = "SELECT 1 FROM users WHERE UserID=? COLLATE NOCASE"
                 self.log_message("SEARCH assigned-devices SQL=%s PARAMS=%r", user_sql, (user_id,))
                 if not connection.execute(user_sql, (user_id,)).fetchone():
                     return []
@@ -1234,6 +1238,28 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
             except (OSError, sqlite3.Error) as error:
                 self.log_error("Primary-user check-in failed: %s", error)
                 self._send_json(500, {"error": "Could not save primary-user check-in to SQLite."})
+            return
+        if self.path == "/api/field-options":
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Field option save must include a JSON object.")
+                field_name = payload.get("fieldName")
+                value = payload.get("value")
+                if not field_name or not value:
+                    raise ValueError("fieldName and value are required.")
+                with _DB_LOCK, database_connection() as connection:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO asset_field_options(field_name, value, is_legacy, position) VALUES (?, ?, 0, 0)",
+                        (field_name, value),
+                    )
+                    connection.commit()
+                self._send_json(200, {"saved": True})
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Field option save failed: %s", error)
+                self._send_json(500, {"error": "Could not save field option."})
             return
         if self.path != "/api/bootstrap":
             self._send_json(404, {"error": "API route not found."})

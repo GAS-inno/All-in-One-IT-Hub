@@ -8,6 +8,25 @@ App.registerModule('users', (() => {
     singapore: 'SG', australia: 'AU', malaysia: 'MY', thailand: 'TH', india: 'IN',
     indonesia: 'ID', vietnam: 'VN', philippines: 'PH', japan: 'JP', 'united states': 'US'
   };
+  const USER_IMPORT_COLUMN_LABELS = {
+    name: 'Name',
+    'full name': 'Full Name',
+    'user name': 'User Name',
+    'staff name': 'Staff Name',
+    userid: 'UserID',
+    'user id': 'UserID',
+    email: 'Email',
+    'email address': 'Email Address',
+    'staff email': 'Staff Email',
+    'user email': 'User Email',
+    'account active': 'Account Active',
+    'account status': 'Account Status',
+    active: 'Active',
+    country: 'Country',
+    location: 'Location',
+    office: 'Office',
+    site: 'Site'
+  };
 
   function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -23,10 +42,9 @@ App.registerModule('users', (() => {
     return normalize(email) || normalize(name);
   }
 
-  function accountActiveForEmail(email) {
-    const localPart = String(email || '').trim().split('@')[0] || '';
-    // Some directory exports prepend a long hexadecimal object ID to the real username.
-    return /^[a-f0-9]{24,}/i.test(localPart) ? 'NO' : 'YES';
+  function accountActiveFromCsv(value) {
+    const text = String(value || '').trim().toUpperCase();
+    return text === 'YES' || text === 'NO' ? text : 'YES';
   }
 
   function makeUserId() {
@@ -35,7 +53,17 @@ App.registerModule('users', (() => {
 
   function storedUsers() {
     const records = App.store.get('users');
-    return Array.isArray(records) ? records : [];
+    if (!Array.isArray(records)) return [];
+    return records.map((record) => {
+      if (!record || typeof record !== 'object') return record;
+      const normalized = { ...record };
+      if ('User ID' in normalized || 'user_id' in normalized) {
+        normalized.UserID = normalized.UserID ?? normalized['User ID'] ?? normalized.user_id;
+        delete normalized['User ID'];
+        delete normalized.user_id;
+      }
+      return normalized;
+    });
   }
 
   function countryCode(value) {
@@ -70,7 +98,7 @@ App.registerModule('users', (() => {
     const label = name || email;
     if (!label) return null;
     return {
-      name: label,
+      name,
       email,
       key: userKey(email, label),
       country: String(device.Country || App.modules.inventory?.countryForDevice?.(device) || ''),
@@ -88,7 +116,7 @@ App.registerModule('users', (() => {
       if (!key || !name) return;
       const existing = options.get(key);
       options.set(key, {
-        id: existing?.id || String(user['User ID'] || user.id || fallbackId || `user:${key}`),
+        id: existing?.id || String(user.UserID || fallbackId || `user:${key}`),
         name,
         email: email || existing?.email || '',
         country: String(user.Country || user.country || existing?.country || ''),
@@ -119,10 +147,10 @@ App.registerModule('users', (() => {
       if (!key || !countryMatches(record.Country)) return;
       users.set(key, {
         key,
-        id: String(record['User ID'] || ''),
+        id: String(record.UserID || ''),
         name: String(record.Name || '').trim(),
         email: String(record.Email || '').trim(),
-        accountActive: String(record['Account Active'] || accountActiveForEmail(record.Email)).trim().toUpperCase(),
+        accountActive: String(record['Account Active'] || 'YES').trim().toUpperCase(),
         country: String(record.Country || ''),
         location: String(record.Location || ''),
         assets: [],
@@ -143,12 +171,18 @@ App.registerModule('users', (() => {
       if (!user) {
         user = {
           key, id: '', name: identity.name, email: identity.email,
-          accountActive: accountActiveForEmail(identity.email),
+          accountActive: 'YES',
           country: identity.country, location: identity.location,
           assets: [], serials: new Set()
         };
         users.set(key, user);
       }
+
+      const deviceOwnerEmail = String(identity.email || '').trim().toLowerCase();
+      const userEmailValue = String(user.email || '').trim().toLowerCase();
+      const ownsDevice = Boolean(deviceOwnerEmail) && Boolean(userEmailValue) && deviceOwnerEmail === userEmailValue;
+      if (!ownsDevice) return;
+
       if (user.serials.has(serial)) return;
       user.serials.add(serial);
       user.assets.push({
@@ -197,7 +231,7 @@ App.registerModule('users', (() => {
         if (!form.reportValidity()) return;
         const values = new FormData(form);
         const record = {
-          'User ID': makeUserId(),
+          UserID: makeUserId(),
           Name: String(values.get('name') || '').trim(),
           Email: String(values.get('email') || '').trim(),
           'Account Active': String(values.get('accountActive') || 'YES').trim().toUpperCase(),
@@ -212,7 +246,7 @@ App.registerModule('users', (() => {
           ? {
               ...current[duplicateIndex],
               ...record,
-              'User ID': current[duplicateIndex]['User ID'],
+              UserID: current[duplicateIndex].UserID,
               Name: record.Name || current[duplicateIndex].Name,
               Email: record.Email || current[duplicateIndex].Email,
               Country: record.Country || current[duplicateIndex].Country,
@@ -238,9 +272,13 @@ App.registerModule('users', (() => {
     const rows = App.modules.inventory?.parseCsvText?.(text);
     if (!rows || rows.length < 2) throw new Error('User CSV is empty or missing a header row.');
     const headers = rows[0].map((header) => String(header || '').replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' '));
+    const nameKeyIndex = headers.findIndex((header) => ['name', 'full name', 'user name', 'staff name'].includes(header));
+    const userIdIndex = headers.findIndex((header) => ['userid', 'user id'].includes(header));
     const indexes = {
-      name: headers.findIndex((header) => ['name', 'full name', 'user name', 'staff name'].includes(header)),
+      userId: userIdIndex,
+      name: nameKeyIndex >= 0 ? nameKeyIndex : userIdIndex,
       email: headers.findIndex((header) => ['email', 'email address', 'staff email', 'user email'].includes(header)),
+      accountActive: headers.findIndex((header) => ['account active', 'account status', 'active'].includes(header)),
       country: headers.findIndex((header) => header === 'country'),
       location: headers.findIndex((header) => ['location', 'office', 'site'].includes(header))
     };
@@ -255,10 +293,10 @@ App.registerModule('users', (() => {
         throw new Error(`User CSV row ${rowIndex + 2} has an invalid email address.`);
       }
       return {
-        'User ID': makeUserId(),
+        UserID: value(indexes.userId),
         Name: name,
         Email: email,
-        'Account Active': accountActiveForEmail(email),
+        'Account Active': accountActiveFromCsv(value(indexes.accountActive)),
         Country: value(indexes.country),
         Location: value(indexes.location)
       };
@@ -271,7 +309,39 @@ App.registerModule('users', (() => {
       if (seen.has(key)) throw new Error(`User CSV contains a duplicate user: ${user.Email || user.Name}.`);
       seen.add(key);
     });
-    return imported;
+    return {
+      imported,
+      headers,
+      validation: validateUserImportColumns(headers)
+    };
+  }
+
+  function validateUserImportColumns(headers) {
+    const recognized = [];
+    const unrecognized = [];
+    const normalizedSet = new Set();
+    const knownUserColumns = [
+      'name', 'full name', 'user name', 'staff name', 'userid', 'user id',
+      'email', 'email address', 'staff email', 'user email',
+      'account active', 'account status', 'active',
+      'country', 'location', 'office', 'site'
+    ];
+    headers.forEach((header) => {
+      const normalized = String(header || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      if (!normalized) return;
+      normalizedSet.add(normalized);
+      if (knownUserColumns.includes(normalized)) {
+        if (!recognized.includes(normalized)) recognized.push(normalized);
+      } else if (!unrecognized.includes(normalized)) {
+        unrecognized.push(normalized);
+      }
+    });
+    const nameKeys = ['name', 'full name', 'user name', 'staff name', 'userid', 'user id'];
+    const userIdKeys = ['userid', 'user id'];
+    const missingRequired = [];
+    if (!nameKeys.some((key) => normalizedSet.has(key))) missingRequired.push('Name, Full Name, User Name, Staff Name, UserID, or User ID');
+    if (!userIdKeys.some((key) => normalizedSet.has(key))) missingRequired.push('User ID');
+    return { recognized, unrecognized, missingRequired };
   }
 
   function mergeImportedUsers(existing, imported) {
@@ -283,7 +353,7 @@ App.registerModule('users', (() => {
       else merged[existingIndex] = {
         ...merged[existingIndex],
         ...record,
-        'User ID': merged[existingIndex]['User ID'],
+        UserID: merged[existingIndex].UserID,
         Name: record.Name || merged[existingIndex].Name,
         Email: record.Email || merged[existingIndex].Email,
         Country: record.Country || merged[existingIndex].Country,
@@ -354,9 +424,10 @@ App.registerModule('users', (() => {
       <input id="usersFileInput" type="file" accept=".csv,text/csv" hidden />
       <div class="card inventory-table-wrap">
         <table class="inventory-table">
-          <thead><tr><th><input type="checkbox" id="selectAllUsers" aria-label="Select all users" /></th><th>User</th><th>Email</th><th>Account Active</th><th>Country</th><th>Location</th><th>Assigned assets</th><th>Actions</th></tr></thead>
+          <thead><tr><th><input type="checkbox" id="selectAllUsers" aria-label="Select all users" /></th><th>User ID</th><th>Name</th><th>Email</th><th>Account Active</th><th>Country</th><th>Location</th><th>Assigned assets</th><th>Actions</th></tr></thead>
           <tbody>${filteredUsers.length ? filteredUsers.map((user, index) => `<tr>
             <td><input type="checkbox" class="user-select-checkbox" data-user-index="${index}" aria-label="Select user" /></td>
+            <td>${escapeHtml(user.id || '—')}</td>
             <td>${escapeHtml(user.name)}</td>
             <td>${escapeHtml(user.email || '—')}</td>
             <td>${escapeHtml(user.accountActive || 'YES')}</td>
@@ -375,11 +446,55 @@ App.registerModule('users', (() => {
       const [file] = event.target.files || [];
       if (!file) return;
       try {
-        const imported = parseUserCsv(await file.text());
-        const next = mergeImportedUsers(storedUsers(), imported);
-        await App.store.set('users', next);
-        render(container, countryFilter);
-        Toast.show(`${imported.length} user record${imported.length === 1 ? '' : 's'} imported.`, 'success');
+        const parsed = parseUserCsv(await file.text());
+        const imported = parsed.imported;
+        const validation = parsed.validation;
+        if (validation.missingRequired && validation.missingRequired.length) {
+          Modal.open({
+            title: 'User CSV Import Review',
+            confirmText: 'Proceed to import',
+            body: `<div class="import-report"><div class="import-report-title">User CSV Import Review</div><div class="import-report-section"><strong style="color: var(--red);">Missing required columns:</strong> <ul>${validation.missingRequired.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul></div></div>`,
+            onConfirm: () => {}
+          });
+          return;
+        }
+        Modal.open({
+          title: 'User CSV Import Review',
+          confirmText: 'Proceed to import',
+          body: App.modules.inventory?.renderImportReport?.({
+            title: 'User CSV Import Review',
+            summaryLines: [`${imported.length} user record${imported.length === 1 ? '' : 's'} ready to import.`],
+            selectableColumns: validation.recognized.map((column) => ({ key: column, label: USER_IMPORT_COLUMN_LABELS[column] || column })),
+            recognizedColumns: validation.recognized,
+            unrecognizedColumns: validation.unrecognized
+          }) || `<div class="import-report"><div class="import-report-title">User CSV Import Review</div><div class="import-report-section"><strong style="color: var(--green);">Recognized columns (will be imported):</strong> ${validation.recognized.length ? `<ul>${validation.recognized.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul>` : '<p>No recognized columns found.</p>'}</div><div class="import-report-section"><strong style="color: var(--red);">Unrecognized columns:</strong> ${validation.unrecognized.length ? `<ul>${validation.unrecognized.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul>` : '<p>None</p>'}</div></div>`,
+          onConfirm: async () => {
+            try {
+              const existing = storedUsers();
+              const merged = mergeImportedUsers(existing, imported);
+              const addedCount = imported.filter((record) => !existing.some((user) => userKey(user.Email, user.Name) === userKey(record.Email, record.Name))).length;
+              const mergedCount = imported.length - addedCount;
+              await App.store.set('users', merged);
+              Modal.close();
+              render(container, countryFilter);
+              Modal.open({
+                title: 'User Import Report',
+                confirmText: 'Close',
+                body: App.modules.inventory?.renderImportReport?.({
+                  title: 'User Import Report',
+                  summaryLines: [`${addedCount} added`, `${mergedCount} merged`],
+                  recognizedColumns: validation.recognized,
+                  unrecognizedColumns: validation.unrecognized
+                }),
+                onConfirm: () => Modal.close(),
+                confirmText: 'Close'
+              });
+              Toast.show(`${addedCount} user${addedCount === 1 ? '' : 's'} imported.`, 'success');
+            } catch (error) {
+              Toast.show(`User CSV import failed: ${error.message || error}`, 'error', 6000);
+            }
+          }
+        });
       } catch (error) {
         Toast.show(`User CSV import failed: ${error.message || error}`, 'error', 6000);
       } finally {
@@ -469,12 +584,12 @@ App.registerModule('users', (() => {
             oldName: normalize(item.name)
           }));
           const isTargetUser = (user) => editTargets.some((target) => (
-            (target.id && String(user['User ID'] || '') === target.id)
+            (target.id && String(user.UserID || '') === target.id)
             || (target.oldEmail && normalize(user.Email) === target.oldEmail)
             || (!target.oldEmail && target.oldName && normalize(user.Name) === target.oldName)
           ));
           const nextUsers = storedUsers().map((user) => isTargetUser(user)
-            ? { ...user, ...updated, 'User ID': user['User ID'] }
+            ? { ...user, ...updated, UserID: user.UserID }
             : user);
           const inventory = App.store.get('inventory') || [];
           const nextInventory = inventory.map((device) => {

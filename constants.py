@@ -2,7 +2,21 @@
 
 DEPLOYMENT_STATUS = ["In Use", "In Stock", "Workshop", "Retired", "Disposed"]
 CONDITION = ["Good", "Needs Repair", "End of Life", "Unknown"]
+CONDITION_LABELS = {
+    "Good": "Working",
+    "Needs Repair": "Faulty",
+    "End of Life": "Beyond Economic Repair",
+    "Unknown": "Not Assessed",
+}
 DISPOSITION_METHOD = ["Recycle", "Resell", "Donate", "Wipe & Hold"]
+
+OLD_DEVICE_OUTCOME = [
+    "Re-issued to another user",
+    "Sent to workshop for repair",
+    "Awaiting re-imaging",
+    "Retired pending disposal",
+    "Disposed",
+]
 
 BADGE_COLORS = {
     "In Use": "#3b82f6",

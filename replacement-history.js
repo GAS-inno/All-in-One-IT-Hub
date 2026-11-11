@@ -9,17 +9,16 @@ App.registerModule('replacements', (() => {
     'Replacement Date',
     'Replacement Reason',
     'Old Device Condition',
-    'Lifecycle Status',
+    'old_device_outcome',
     'Remarks'
   ];
   const REASONS = ['Out of Warranty (OOW)', 'Hardware Failure', 'Damaged Device', 'Performance Issue', 'Upgrade or Refresh', 'Other'];
-  const CONDITIONS = ['Working', 'Faulty', 'Damaged', 'Not Assessed'];
-  const LIFECYCLE = ['In Use', 'Available for Handover', 'Pending Assessment', 'Recycle', 'Disposed'];
+  const CONDITIONS = ['Working', 'Faulty', 'Beyond Economic Repair', 'Not Assessed'];
   let records = [];
   let loaded = false;
   let search = '';
   let reasonFilter = '';
-  let lifecycleFilter = '';
+  let outcomeFilter = '';
   let dateFrom = '';
   let dateTo = '';
   let sortBy = 'date';
@@ -135,7 +134,7 @@ App.registerModule('replacements', (() => {
       'Replacement Date': String(record['Replacement Date'] || '').trim(),
       'Replacement Reason': String(record['Replacement Reason'] || '').trim(),
       'Old Device Condition': String(record['Old Device Condition'] || '').trim(),
-      'Lifecycle Status': String(record['Lifecycle Status'] || '').trim(),
+      'old_device_outcome': String(record['old_device_outcome'] || '').trim(),
       Remarks: String(record.Remarks || '').trim()
     };
     const errors = [];
@@ -149,8 +148,13 @@ App.registerModule('replacements', (() => {
     }
     if (!validDate(normalized['Replacement Date'])) errors.push('Replacement Date must be a valid YYYY-MM-DD date.');
     if (!REASONS.includes(normalized['Replacement Reason'])) errors.push('Select a valid Replacement Reason.');
-    if (!CONDITIONS.includes(normalized['Old Device Condition'])) errors.push('Select a valid Old Device Condition.');
-    if (!LIFECYCLE.includes(normalized['Lifecycle Status'])) errors.push('Select a valid Lifecycle Status.');
+    if (normalized['Old Device Condition'] && !CONDITIONS.includes(normalized['Old Device Condition'])) {
+      errors.push('Select a valid Old Device Condition.');
+    }
+    const outcome = normalized['old_device_outcome'];
+    if (outcome && !window.OLD_DEVICE_OUTCOME.includes(outcome)) {
+      errors.push('Select a valid Old Device Outcome.');
+    }
     return { record: normalized, errors };
   }
 
@@ -229,7 +233,7 @@ App.registerModule('replacements', (() => {
         'Replacement Date': '',
         'Replaced By Device Serial Number': '',
         'Replacement Count': '',
-        'Lifecycle Status': ''
+        'old_device_outcome': ''
       };
     }
     const matches = records.filter((record) => serialKey(record['Old Device Serial Number']) === serialKey(serial))
@@ -241,23 +245,20 @@ App.registerModule('replacements', (() => {
       'Replacement Date': matches.map((record) => record['Replacement Date']).join(', '),
       'Replaced By Device Serial Number': matches.map((record) => record['New Device Serial Number']).join(' → '),
       'Replacement Count': matches.length,
-      'Lifecycle Status': latest?.['Lifecycle Status'] || ''
+      'Old Device Outcome': latest?.['old_device_outcome'] || ''
     };
   }
 
   function renderStats() {
     const current = latestPerOldDevice();
-    let recycle = 0;
-    let pending = 0;
+    let disposed = 0;
     current.forEach((record) => {
-      if (record['Lifecycle Status'] === 'Recycle') recycle += 1;
-      if (record['Lifecycle Status'] === 'Pending Assessment') pending += 1;
+      if (record['old_device_outcome'] === 'Disposed') disposed += 1;
     });
     const values = [
       ['Total replacement records', records.length],
       ['Unique old devices replaced', current.size],
-      ['Marked for recycling', recycle],
-      ['Pending assessment', pending]
+      ['Marked disposed', disposed]
     ];
     return `<div class="stats-grid replacement-stats">${values.map(([label, value]) => `
       <div class="stat-card"><div class="stat-label">${escapeHtml(label)}</div><div class="stat-value">${value}</div></div>
@@ -266,9 +267,10 @@ App.registerModule('replacements', (() => {
 
   function statusBadge(value) {
     const normalized = String(value || '').trim();
-    const color = normalized === 'Recycle' || normalized === 'Un-deployable' || normalized === 'Disposed' ? 'badge-red'
-      : value === 'Pending Assessment' ? 'badge-orange'
-        : normalized === 'Deployable' || value === 'Available for Handover' || value === 'In Use' ? 'badge-green' : 'badge-gray';
+    const color = normalized === 'Disposed' || normalized === 'Retired pending disposal' ? 'badge-red'
+      : normalized === 'Sent to workshop for repair' ? 'badge-orange'
+        : normalized === 'Awaiting re-imaging' ? 'badge-yellow'
+          : normalized === 'Re-issued to another user' ? 'badge-green' : 'badge-gray';
     return `<span class="badge ${color}">${escapeHtml(normalized || '—')}</span>`;
   }
 
@@ -281,7 +283,7 @@ App.registerModule('replacements', (() => {
       ].some((value) => String(value || '').toLowerCase().includes(query));
       return matchesQuery
         && (!reasonFilter || record['Replacement Reason'] === reasonFilter)
-        && (!lifecycleFilter || record['Lifecycle Status'] === lifecycleFilter)
+        && (!outcomeFilter || record['old_device_outcome'] === outcomeFilter)
         && (!dateFrom || record['Replacement Date'] >= dateFrom)
         && (!dateTo || record['Replacement Date'] <= dateTo);
     }).sort((a, b) => {
@@ -308,7 +310,7 @@ App.registerModule('replacements', (() => {
         <td><span class="replacement-device-name">${newName ? escapeHtml(newName) : '<span class="replacement-missing">Not found in current inventory</span>'}</span><small class="replacement-device-serial">${escapeHtml(record['New Device Serial Number'])}</small></td>
         <td>${escapeHtml(record['Replacement Date'])}</td>
         <td>${escapeHtml(record['Replacement Reason'])}</td>
-        <td>${statusBadge(record['Lifecycle Status'])}</td>
+        <td>${statusBadge(record['old_device_outcome'])}</td>
         <td class="replacement-actions">
           <button class="btn btn-secondary btn-sm view-replacement-btn" data-id="${id}">View</button>
           <button class="btn btn-secondary btn-sm edit-replacement-btn" data-id="${id}">Edit</button>
@@ -383,7 +385,7 @@ App.registerModule('replacements', (() => {
       'Replacement Date': localToday(),
       'Replacement Reason': '',
       'Old Device Condition': '',
-      'Lifecycle Status': '',
+      'old_device_outcome': '',
       Remarks: ''
     };
     let selectedStaffUserId = '';
@@ -427,8 +429,8 @@ App.registerModule('replacements', (() => {
           <label class="device-form-field">Old Device Condition *
             <select class="form-control" name="Old Device Condition" required>${selectOptions(CONDITIONS, record['Old Device Condition'], 'Select condition')}</select>
           </label>
-          <label class="device-form-field">Lifecycle Status *
-            <select class="form-control" name="Lifecycle Status" required>${selectOptions(LIFECYCLE, record['Lifecycle Status'], 'Select status')}</select>
+          <label class="device-form-field">Old Device Outcome *
+            <select class="form-control" name="old_device_outcome">${selectOptions(window.OLD_DEVICE_OUTCOME, record['old_device_outcome'], 'Select outcome')}</select>
           </label>
           <label class="device-form-field replacement-remarks-field">Remarks
             <textarea class="form-control" name="Remarks">${escapeHtml(record.Remarks)}</textarea>
@@ -821,7 +823,7 @@ App.registerModule('replacements', (() => {
       <div class="filter-bar replacement-filters">
         <input id="replacementSearch" class="search-input" placeholder="Search ID, staff, email, or serial..." value="${escapeHtml(search)}">
         <select id="replacementReasonFilter" class="form-control replacement-filter">${selectOptions(REASONS, reasonFilter, 'All reasons')}</select>
-        <select id="replacementLifecycleFilter" class="form-control replacement-filter">${selectOptions(LIFECYCLE, lifecycleFilter, 'All lifecycle')}</select>
+        <select id="replacementOutcomeFilter" class="form-control replacement-filter">${selectOptions(window.OLD_DEVICE_OUTCOME, outcomeFilter, 'All outcomes')}</select>
         <label class="replacement-date-filter">From <input id="replacementDateFrom" type="date" class="form-control" value="${escapeHtml(dateFrom)}"></label>
         <label class="replacement-date-filter">To <input id="replacementDateTo" type="date" class="form-control" value="${escapeHtml(dateTo)}"></label>
         <select id="replacementSort" class="form-control replacement-filter">
@@ -837,7 +839,7 @@ App.registerModule('replacements', (() => {
           <thead><tr>
             <th>Replacement ID</th><th>Staff Member Name</th>
             <th>Old Device</th><th>New Device</th><th>Replacement Date</th>
-            <th>Replacement Reason</th><th>Lifecycle Status</th><th>Actions</th>
+            <th>Replacement Reason</th><th>Old Device Outcome</th><th>Actions</th>
           </tr></thead>
           <tbody>${renderRows(rows)}</tbody>
         </table>
@@ -862,7 +864,7 @@ App.registerModule('replacements', (() => {
       nextSearch.setSelectionRange(caret, caret);
     });
     container.querySelector('#replacementReasonFilter').addEventListener('change', (event) => { reasonFilter = event.target.value; render(container); });
-    container.querySelector('#replacementLifecycleFilter').addEventListener('change', (event) => { lifecycleFilter = event.target.value; render(container); });
+    container.querySelector('#replacementOutcomeFilter').addEventListener('change', (event) => { outcomeFilter = event.target.value; render(container); });
     container.querySelector('#replacementDateFrom').addEventListener('change', (event) => { dateFrom = event.target.value; render(container); });
     container.querySelector('#replacementDateTo').addEventListener('change', (event) => { dateTo = event.target.value; render(container); });
     container.querySelector('#replacementSort').addEventListener('change', (event) => { sortBy = event.target.value; render(container); });
@@ -870,7 +872,7 @@ App.registerModule('replacements', (() => {
     container.querySelector('#clearReplacementFilters').addEventListener('click', () => {
       search = '';
       reasonFilter = '';
-      lifecycleFilter = '';
+      outcomeFilter = '';
       dateFrom = '';
       dateTo = '';
       render(container);
