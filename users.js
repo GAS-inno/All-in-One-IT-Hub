@@ -328,6 +328,7 @@ App.registerModule('users', (() => {
         throw new Error(`User CSV row ${rowIndex + 2} has an invalid email address.`);
       }
       const staffTypeRaw = value(indexes.staffType);
+      const hasStaffTypeColumn = indexes.staffType >= 0;
       let staff_type = null;
       let staff_type_source = 'auto';
       if (staffTypeRaw) {
@@ -337,16 +338,19 @@ App.registerModule('users', (() => {
         else if (normalized === 'unclassified') { staff_type = null; staff_type_source = 'manual'; }
         else { staff_type = null; staff_type_source = 'auto'; }
       }
-      return {
+      const record = {
         UserID: value(indexes.userId),
         Name: name,
         Email: email,
         'Account Active': accountActiveFromCsv(value(indexes.accountActive)),
         Country: value(indexes.country),
-        Location: value(indexes.location),
-        staff_type,
-        staff_type_source
+        Location: value(indexes.location)
       };
+      if (hasStaffTypeColumn) {
+        record.staff_type = staff_type;
+        record.staff_type_source = staff_type_source;
+      }
+      return record;
     });
     if (!imported.length) throw new Error('User CSV contains no user records.');
 
@@ -397,23 +401,54 @@ App.registerModule('users', (() => {
     return { recognized, unrecognized, missingRequired };
   }
 
-  function mergeImportedUsers(existing, imported) {
+  function mergeImportedUsers(existing, imported, { skipExisting = false } = {}) {
     const merged = existing.map((user) => ({ ...user }));
+    let added = 0;
+    let updated = 0;
+    let skipped = 0;
     imported.forEach((record) => {
+      const recordId = String(record.UserID || '').trim().toLowerCase();
       const key = userKey(record.Email, record.Name);
-      const existingIndex = merged.findIndex((user) => userKey(user.Email, user.Name) === key);
-      if (existingIndex < 0) merged.push(record);
-      else merged[existingIndex] = {
-        ...merged[existingIndex],
-        ...record,
-        UserID: merged[existingIndex].UserID,
-        Name: record.Name || merged[existingIndex].Name,
-        Email: record.Email || merged[existingIndex].Email,
-        Country: record.Country || merged[existingIndex].Country,
-        Location: record.Location || merged[existingIndex].Location
+      const existingIndex = merged.findIndex((user) => {
+        const userId = String(user.UserID || user.id || '').trim().toLowerCase();
+        if (recordId && userId && recordId === userId) return true;
+        return userKey(user.Email, user.Name) === key;
+      });
+      if (existingIndex < 0) {
+        merged.push({ ...record });
+        added += 1;
+        return;
+      }
+      if (skipExisting) {
+        skipped += 1;
+        return;
+      }
+      const current = merged[existingIndex];
+      const hasOwn = (obj, prop) => Object.prototype.hasOwnProperty.call(obj, prop);
+      const pick = (field, currentValue) => {
+        const incoming = String(record[field] || '').trim();
+        return incoming !== '' ? incoming : String(currentValue || '').trim();
       };
+      merged[existingIndex] = {
+        ...current,
+        ...record,
+        UserID: String(current.UserID || record.UserID || '').trim(),
+        Name: pick('Name', current.Name),
+        Email: pick('Email', current.Email),
+        'Account Active': hasOwn(record, 'Account Active') ? (String(record['Account Active'] || '').trim() || String(current['Account Active'] || 'YES')) : (current['Account Active'] || 'YES'),
+        Country: pick('Country', current.Country),
+        Location: pick('Location', current.Location),
+      };
+      // Only apply staff type when explicitly provided by the import.
+      if (!hasOwn(record, 'staff_type')) {
+        if (hasOwn(current, 'staff_type')) merged[existingIndex].staff_type = current.staff_type;
+        else delete merged[existingIndex].staff_type;
+        if (hasOwn(current, 'staff_type_source')) merged[existingIndex].staff_type_source = current.staff_type_source;
+        else delete merged[existingIndex].staff_type_source;
+      }
+      updated += 1;
     });
-    return merged;
+    return { merged, added, updated, skipped };
   }
 
   function render(container, country = 'all') {
@@ -597,31 +632,57 @@ App.registerModule('users', (() => {
             recognizedColumns: validation.recognized,
             unrecognizedColumns: validation.unrecognized
           }) || `<div class="import-report"><div class="import-report-title">User CSV Import Review</div><div class="import-report-section"><strong style="color: var(--green);">Recognized columns (will be imported):</strong> ${validation.recognized.length ? `<ul>${validation.recognized.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul>` : '<p>No recognized columns found.</p>'}</div><div class="import-report-section"><strong style="color: var(--red);">Unrecognized columns:</strong> ${validation.unrecognized.length ? `<ul>${validation.unrecognized.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul>` : '<p>None</p>'}</div></div>`,
-          onConfirm: async () => {
-            try {
-              const existing = storedUsers();
-              const merged = mergeImportedUsers(existing, imported);
-              const addedCount = imported.filter((record) => !existing.some((user) => userKey(user.Email, user.Name) === userKey(record.Email, record.Name))).length;
-              const mergedCount = imported.length - addedCount;
-              await App.store.set('users', merged);
-              Modal.close();
-              render(container, countryFilter);
-              Modal.open({
-                title: 'User Import Report',
-                confirmText: 'Close',
-                body: App.modules.inventory?.renderImportReport?.({
-                  title: 'User Import Report',
-                  summaryLines: [`${addedCount} added`, `${mergedCount} merged`],
-                  recognizedColumns: validation.recognized,
-                  unrecognizedColumns: validation.unrecognized
-                }),
-                onConfirm: () => Modal.close(),
-                confirmText: 'Close'
+          onConfirm: () => {
+            const existing = storedUsers();
+            const matchCount = imported.filter((record) => {
+              const recordId = String(record.UserID || '').trim().toLowerCase();
+              const key = userKey(record.Email, record.Name);
+              return existing.some((user) => {
+                const userId = String(user.UserID || user.id || '').trim().toLowerCase();
+                if (recordId && userId && recordId === userId) return true;
+                return userKey(user.Email, user.Name) === key;
               });
-              Toast.show(`${addedCount} user${addedCount === 1 ? '' : 's'} imported.`, 'success');
-            } catch (error) {
-              Toast.show(`User CSV import failed: ${error.message || error}`, 'error', 6000);
+            }).length;
+
+            const applyImport = async (skipExisting) => {
+              try {
+                const result = mergeImportedUsers(existing, imported, { skipExisting });
+                await App.store.set('users', result.merged);
+                Modal.close();
+                render(container, countryFilter);
+                const summaryLines = [`${result.added} added`, `${result.updated} updated`];
+                if (result.skipped) summaryLines.push(`${result.skipped} existing skipped`);
+                Modal.open({
+                  title: 'User Import Report',
+                  confirmText: 'Close',
+                  body: App.modules.inventory?.renderImportReport?.({
+                    title: 'User Import Report',
+                    summaryLines,
+                    recognizedColumns: validation.recognized,
+                    unrecognizedColumns: validation.unrecognized
+                  }) || `<p>${escapeHtml(summaryLines.join(', '))}</p>`,
+                  onConfirm: () => Modal.close()
+                });
+                Toast.show(`User import: ${summaryLines.join(', ')}.`, 'success');
+              } catch (error) {
+                Modal.close();
+                Toast.show(`Could not save users: ${error.message || error}`, 'error', 6000);
+              }
+            };
+
+            if (!matchCount) {
+              applyImport(false);
+              return;
             }
+
+            Modal.open({
+              title: 'Matching users found',
+              confirmText: 'Continue import',
+              body: `<p>${matchCount} imported user record${matchCount === 1 ? '' : 's'} match existing users (by User ID, email, or name). Choose how to handle them:</p>
+                <label class="duplicate-choice"><input type="radio" name="userImportMode" value="merge" checked> Merge into existing users (update matching records, add new users)</label>
+                <label class="duplicate-choice"><input type="radio" name="userImportMode" value="skip"> Skip existing users (add only new users)</label>`,
+              onConfirm: () => applyImport(document.querySelector('input[name="userImportMode"]:checked')?.value === 'skip')
+            });
           }
         });
       } catch (error) {
