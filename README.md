@@ -133,6 +133,8 @@ Each Users record carries a **Staff Type** of **External Staff** or **Internal S
 
 - The Users summary line reports external, internal, and unclassified staff totals, and the **Filter** slide-over panel can filter by Staff Type, Account Active, Country, Location, Assigned assets, and free-text User ID/Name/Email.
 
+- The **Staff Type** can also be set when adding a user (**+ Add user**, with **Auto-detect** as the default) or when bulk-editing selected users (**Edit selected**). Saving a chosen Staff Type records it as a **manual** override; **Auto-detect** recomputes from the name. The per-row **Reset** action clears a manual override.
+
 The one-time migration `migrations/migrate_add_staff_type.py` backfills `staff_type` and `staff_type_source` for existing users and sets source to `auto`. Preview with `python3 migrations/migrate_add_staff_type.py --dry-run`; apply with `python3 migrations/migrate_add_staff_type.py --apply`. The migration is idempotent, backs up the SQLite database before applying, writes `migration_log.json`, and never overwrites rows whose source is already `manual`. Imports run the same auto-detection; a manual override is never replaced by a later import.
 
 The directory also includes users inferred from imported Primary user fields and active checkout records, so existing inventory users remain available for checkout selection. A device is listed under a directory user only when the asset's Primary user UPN/email matches that user's Email. User profiles list each assigned serial number once; one user may have multiple assets. A current checkout takes precedence over the imported Primary user in the directory until the asset is checked in.
