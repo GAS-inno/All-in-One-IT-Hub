@@ -315,7 +315,7 @@ App.registerModule('users', (() => {
       email: headers.findIndex((header) => ['email', 'email address', 'staff email', 'user email'].includes(header)),
       accountActive: headers.findIndex((header) => ['account active', 'account status', 'active'].includes(header)),
       country: headers.findIndex((header) => header === 'country'),
-      location: headers.findIndex((header) => ['location', 'office', 'site'].includes(header))
+      location: headers.findIndex((header) => ['location', 'office', 'site', 'localtion'].includes(header))
     };
     if (indexes.name < 0) throw new Error('User CSV must include a NAME column (or Full Name/User Name/Staff Name).');
 
@@ -372,7 +372,7 @@ App.registerModule('users', (() => {
       'staff type',
       'email', 'email address', 'staff email', 'user email',
       'account active', 'account status', 'active',
-      'country', 'location', 'office', 'site'
+      'country', 'location', 'office', 'site', 'localtion'
     ];
     headers.forEach((header) => {
       const normalized = String(header || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
