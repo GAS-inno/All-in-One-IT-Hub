@@ -13,6 +13,7 @@ import server as server_module
 from server import (
     InventoryRequestHandler,
     ThreadingHTTPServer,
+    _detect_staff_type,
     _read_inventory,
     _read_checkout_history,
     _read_replacement_history,
@@ -198,14 +199,55 @@ class SQLitePersistenceTests(unittest.TestCase):
 
     def test_users_round_trip_with_country_and_location(self) -> None:
         users = [
-            {"UserID": "USER-1", "Name": "Alex User", "Email": "alex@example.com", "Country": "Singapore", "Location": "HQ"},
-            {"UserID": "USER-2", "Name": "Sam User", "Email": "", "Country": "Australia", "Location": "Sydney"},
+            {"UserID": "USER-1", "Name": "Alex User", "Email": "alex@example.com", "Country": "Singapore", "Location": "HQ", "staff_type": "Internal Staff", "staff_type_source": "auto"},
+            {"UserID": "USER-2", "Name": "Sam User", "Email": "", "Country": "Australia", "Location": "Sydney", "staff_type": "Internal Staff", "staff_type_source": "auto"},
         ]
         _replace_users(self.connection, users)
         self.assertEqual(_read_users(self.connection), users)
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM users").fetchone()[0], 2)
+
+    def test_users_detect_internal_staff_by_default_and_external_on_ext_marker(self) -> None:
+        self.assertEqual(_detect_staff_type("Chris MURPHY")[0], "Internal Staff")
+        self.assertEqual(_detect_staff_type("Harkirat SINGH (EXT - FPT)")[0], "External Staff")
+        self.assertEqual(_detect_staff_type("Kosmas EVGENIDIS (Ext-FPT)")[0], "External Staff")
+        self.assertEqual(_detect_staff_type("Nam Truong (EXT-CSS)")[0], "External Staff")
+        self.assertEqual(_detect_staff_type("Phillip PLANT (EXT-Genpact)")[0], "External Staff")
+        self.assertEqual(_detect_staff_type("Anita IOPEX (EXT - IOPEX)")[0], "External Staff")
+
+    def test_detect_staff_type_ignores_non_ext_stand_alone_words(self) -> None:
+        for name in ["External Systems", "Extra Talent", "Exposure Group", "Ex staffing"]:
+            self.assertEqual(_detect_staff_type(name)[0], "Internal Staff", name)
+
+    def test_users_manual_override_wins_over_auto_detection_and_survives_reimport(self) -> None:
+        base = {"UserID": "USER-1", "Name": "Alex User", "Email": "alex@example.com", "staff_type": None, "staff_type_source": "auto"}
+        _replace_users(self.connection, [{**base, "staff_type": "Internal Staff"}])
+        self.assertEqual(_read_users(self.connection)[0]["staff_type"], "Internal Staff")
+
+        manual = {**base, "staff_type": "External Staff", "staff_type_source": "manual"}
+        _replace_users(self.connection, [manual])
+        self.assertEqual(_read_users(self.connection)[0]["staff_type"], "External Staff")
+        self.assertEqual(_read_users(self.connection)[0]["staff_type_source"], "manual")
+
+        # A simulated re-import of the overridden user must not overwrite the manual value.
+        _replace_users(self.connection, [{**base, "staff_type": "External Staff", "staff_type_source": "manual"}])
+        stored = _read_users(self.connection)[0]
+        self.assertEqual(stored["staff_type"], "External Staff")
+        self.assertEqual(stored["staff_type_source"], "manual")
+
+        # An incoming auto row for an overridden user must keep the manual value.
+        _replace_users(self.connection, [{**base, "staff_type": None, "staff_type_source": "auto"}])
+        stored = _read_users(self.connection)[0]
+        self.assertEqual(stored["staff_type"], "External Staff")
+        self.assertEqual(stored["staff_type_source"], "manual")
+
+    def test_users_auto_detection_recomputes_from_name(self) -> None:
+        _replace_users(self.connection, [{"UserID": "USER-1", "Name": "Pat (EXT - FPT)", "Email": "pat@example.com"}])
+        stored = _read_users(self.connection)[0]
+        self.assertEqual(stored["staff_type"], "External Staff")
+        self.assertEqual(stored["staff_type_source"], "auto")
 
     def test_users_reject_missing_name_and_duplicate_email(self) -> None:
-        with self.assertRaisesRegex(ValueError, "UserID and Name"):
+        with self.assertRaisesRegex(ValueError, "User ID and Name"):
             _replace_users(self.connection, [{"UserID": "USER-1", "Name": ""}])
         with self.assertRaisesRegex(ValueError, "Duplicate user email"):
             _replace_users(self.connection, [
@@ -379,7 +421,7 @@ class SQLiteApiTests(unittest.TestCase):
     def test_users_api_round_trip(self) -> None:
         users = [{
             "UserID": "USER-1", "Name": "Alex User", "Email": "alex@example.com",
-            "Country": "Singapore", "Location": "HQ",
+            "Country": "Singapore", "Location": "HQ", "staff_type": "Internal Staff", "staff_type_source": "auto",
         }]
         status, bootstrap = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
         self.assertEqual(status, 200)
@@ -392,7 +434,7 @@ class SQLiteApiTests(unittest.TestCase):
         self.assertEqual(reloaded["users"], users)
 
     def test_users_api_rejects_duplicate_emails_without_replacing_existing(self) -> None:
-        existing = [{"UserID": "USER-1", "Name": "Existing", "Email": "existing@example.com"}]
+        existing = [{"UserID": "USER-1", "Name": "Existing", "Email": "existing@example.com", "staff_type": "Internal Staff", "staff_type_source": "auto"}]
         self.assertEqual(self.request_json("/api/users", "PUT", existing)[0], 200)
         status, result = self.request_json("/api/users", "PUT", [
             {"UserID": "USER-2", "Name": "Alex", "Email": "same@example.com"},
@@ -401,6 +443,28 @@ class SQLiteApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("Duplicate user email", result["error"])
         self.assertEqual(self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})[1]["users"], existing)
+
+    def test_users_staff_type_reset_endpoint_clears_manual_override(self) -> None:
+        status, saved = self.request_json("/api/users", "PUT", [{
+            "UserID": "USER-1", "Name": "Pat (EXT - FPT)", "Email": "pat@example.com",
+            "staff_type": "External Staff", "staff_type_source": "manual",
+        }])
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["saved"], 1)
+
+        status, result = self.request_json("/api/users/staff-type/reset", "POST", {"UserID": "USER-1"})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["staffTypeSource"], "auto")
+        self.assertEqual(result["staffType"], "External Staff")
+
+        status, bootstrap = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
+        self.assertEqual(status, 200)
+        self.assertEqual(bootstrap["users"][0]["staff_type_source"], "auto")
+
+    def test_users_staff_type_reset_endpoint_rejects_unknown_user(self) -> None:
+        status, result = self.request_json("/api/users/staff-type/reset", "POST", {"UserID": "NOPE-1"})
+        self.assertEqual(status, 404)
+        self.assertIn("User not found", result["error"])
 
     def test_status_labels_api_round_trip_and_characteristic_validation(self) -> None:
         labels = [
@@ -440,7 +504,7 @@ class SQLiteApiTests(unittest.TestCase):
         }]
         users = [{
             "UserID": "USER-1", "Name": "Alex User", "Email": "alex@example.com",
-            "Country": "Singapore", "Location": "HQ",
+            "Country": "Singapore", "Location": "HQ", "staff_type": "Internal Staff", "staff_type_source": "auto",
         }]
         status_labels = [{"id": "ready", "name": "Ready to Deploy", "type": "Deployable"}]
         for path, records in (

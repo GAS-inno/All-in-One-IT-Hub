@@ -3,6 +3,14 @@ App.registerModule('users', (() => {
   let countryFilter = 'all';
   let userSearch = '';
   let userAssetCountFilter = '';
+  let userStaffTypeFilter = 'all';
+  let userFilterPanelOpen = false;
+  let userFilterUserId = '';
+  let userFilterName = '';
+  let userFilterEmail = '';
+  let userFilterLocation = '';
+  let userFilterAccountActive = '';
+  let userFilterHasAssets = false;
   let selectedUserIndexes = new Set();
   const COUNTRY_CODES = {
     singapore: 'SG', australia: 'AU', malaysia: 'MY', thailand: 'TH', india: 'IN',
@@ -49,6 +57,21 @@ App.registerModule('users', (() => {
 
   function makeUserId() {
     return globalThis.crypto?.randomUUID?.() || `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function detectStaffType(name) {
+    const text = String(name || '').trim();
+    if (!text) return { staffType: null, vendor: null, suspicious: false };
+    const paren = text.match(/\(([^()]*)\)/);
+    if (!paren) return { staffType: 'Internal Staff', vendor: null, suspicious: false };
+    const group = paren[1];
+    const ext = group.match(/(?:^|[^a-z0-9])ext([^a-z0-9]|$)/i);
+    if (!ext) return { staffType: 'Internal Staff', vendor: null, suspicious: false };
+    const after = group.slice(ext.index + ext[0].length).split('[', 1)[0];
+    const vendor = String(after.trim()).split(/[\s\-–—/]+/).filter(Boolean)[0] || null;
+    const outside = text.replace(/\([^()]*\)/g, '');
+    const suspicious = /(?:^|[^a-z0-9])ext([^a-z0-9]|$)/i.test(outside);
+    return { staffType: 'External Staff', vendor, suspicious };
   }
 
   function storedUsers() {
@@ -150,6 +173,8 @@ App.registerModule('users', (() => {
         id: String(record.UserID || ''),
         name: String(record.Name || '').trim(),
         email: String(record.Email || '').trim(),
+        staffType: String(record.staff_type || '').trim(),
+        staffTypeSource: String(record.staff_type_source || '').trim(),
         accountActive: String(record['Account Active'] || 'YES').trim().toUpperCase(),
         country: String(record.Country || ''),
         location: String(record.Location || ''),
@@ -171,6 +196,7 @@ App.registerModule('users', (() => {
       if (!user) {
         user = {
           key, id: '', name: identity.name, email: identity.email,
+          staffType: '', staffTypeSource: 'auto',
           accountActive: 'YES',
           country: identity.country, location: identity.location,
           assets: [], serials: new Set()
@@ -375,9 +401,39 @@ App.registerModule('users', (() => {
       })
       : allUsers;
     const parsedAssetCount = Number(userAssetCountFilter);
-    const filteredUsers = userAssetCountFilter.trim() === '' || !Number.isFinite(parsedAssetCount)
+    let filteredUsers = userAssetCountFilter.trim() === '' || !Number.isFinite(parsedAssetCount)
       ? users
       : users.filter((user) => user.assets.length === parsedAssetCount);
+    if (userStaffTypeFilter && userStaffTypeFilter !== 'all') {
+      filteredUsers = filteredUsers.filter((user) => {
+        const effectiveStaffType = String(user.staffType || '') || null;
+        const wanted = userStaffTypeFilter === '' ? null : userStaffTypeFilter;
+        const matches = wanted === null ? !effectiveStaffType : effectiveStaffType === wanted;
+        return matches;
+      });
+    }
+    if (userFilterUserId.trim()) {
+      const needle = userFilterUserId.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter((user) => String(user.id || '').toLowerCase().includes(needle));
+    }
+    if (userFilterName.trim()) {
+      const needle = userFilterName.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter((user) => String(user.name || '').toLowerCase().includes(needle));
+    }
+    if (userFilterEmail.trim()) {
+      const needle = userFilterEmail.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter((user) => String(user.email || '').toLowerCase().includes(needle));
+    }
+    if (userFilterLocation.trim()) {
+      const needle = userFilterLocation.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter((user) => String(user.location || '').toLowerCase().includes(needle));
+    }
+    if (userFilterAccountActive) {
+      filteredUsers = filteredUsers.filter((user) => String(user.accountActive || 'YES').toUpperCase() === userFilterAccountActive);
+    }
+    if (userFilterHasAssets) {
+      filteredUsers = filteredUsers.filter((user) => user.assets.length > 0);
+    }
     const selected = users.find((user) => user.key === selectedUserKey);
     if (selected) {
       container.innerHTML = `
@@ -402,14 +458,18 @@ App.registerModule('users', (() => {
     const assetCount = filteredUsers.reduce((total, user) => total + user.assets.length, 0);
     const activeAccountCount = filteredUsers.filter((user) => user.accountActive === 'YES').length;
     const inactiveAccountCount = filteredUsers.filter((user) => user.accountActive === 'NO').length;
+    const externalStaffCount = filteredUsers.filter((user) => user.staffType === 'External Staff').length;
+    const internalStaffCount = filteredUsers.filter((user) => user.staffType === 'Internal Staff').length;
+    const unclassifiedStaffCount = filteredUsers.filter((user) => !user.staffType).length;
     container.innerHTML = `
       <div class="section-header">
         <div>
           <div class="section-title">Users</div>
-          <div class="section-sub">${filteredUsers.length} user${filteredUsers.length === 1 ? '' : 's'} · ${activeAccountCount} active · ${inactiveAccountCount} inactive · ${assetCount} assigned serial number${assetCount === 1 ? '' : 's'}</div>
+          <div class="section-sub">${filteredUsers.length} users · ${activeAccountCount} active · ${inactiveAccountCount} inactive · ${externalStaffCount} external · ${internalStaffCount} internal · ${unclassifiedStaffCount} unclassified · ${assetCount} assigned serial number${assetCount === 1 ? '' : 's'}</div>
         </div>
         <div class="section-actions">
           <button class="btn btn-primary btn-sm" id="addUserBtn">+ Add user</button>
+          <button class="btn btn-secondary btn-sm" id="usersFilterToggle" aria-expanded="${userFilterPanelOpen}">Filter</button>
           <button class="btn btn-secondary btn-sm" id="importUsersBtn">Import users CSV</button>
           <div class="user-selection-actions" aria-label="Selected user actions">
             <button class="btn btn-secondary btn-sm" id="editUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Edit selected</button>
@@ -417,25 +477,75 @@ App.registerModule('users', (() => {
           </div>
         </div>
       </div>
+      <div id="userStaffTypeLive" class="sr-only" aria-live="polite"></div>
+      <div class="layout-controls">
+        <div class="column-drawer-backdrop ${userFilterPanelOpen ? 'open' : ''}" id="usersFilterBackdrop"></div>
+        <aside class="column-drawer users-filter-drawer ${userFilterPanelOpen ? 'open' : ''}" id="usersFilterPanel" aria-label="User filters" aria-hidden="${!userFilterPanelOpen}">
+          <div class="column-drawer-header"><div><strong>Filters</strong><small>Filter the Users directory by column.</small></div><button type="button" class="btn btn-secondary btn-sm" id="closeUsersFilter" aria-label="Close filters">×</button></div>
+          <label class="duplicate-filter-option" for="userFilterUserId">User ID</label>
+          <input id="userFilterUserId" class="form-control" type="text" placeholder="Partial user ID..." value="${escapeHtml(userFilterUserId)}" />
+          <label class="duplicate-filter-option" for="userFilterName">Name</label>
+          <input id="userFilterName" class="form-control" type="text" placeholder="Partial name..." value="${escapeHtml(userFilterName)}" />
+          <label class="duplicate-filter-option" for="userFilterEmail">Email</label>
+          <input id="userFilterEmail" class="form-control" type="email" placeholder="Partial email..." value="${escapeHtml(userFilterEmail)}" />
+          <label class="duplicate-filter-option" for="userFilterStaffType">Staff Type</label>
+          <select id="userFilterStaffType" class="form-control" aria-label="Staff Type">
+            <option value="all">All staff types</option>
+            <option value="External Staff" ${userStaffTypeFilter === 'External Staff' ? 'selected' : ''}>External Staff</option>
+            <option value="Internal Staff" ${userStaffTypeFilter === 'Internal Staff' ? 'selected' : ''}>Internal Staff</option>
+            <option value="" ${!userStaffTypeFilter || userStaffTypeFilter === '' ? 'selected' : ''}>Unclassified</option>
+          </select>
+          <label class="duplicate-filter-option" for="userFilterAccountActive">Account Active</label>
+          <select id="userFilterAccountActive" class="form-control" aria-label="Account Active">
+            <option value="" ${!userFilterAccountActive ? 'selected' : ''}>All</option>
+            <option value="YES" ${userFilterAccountActive === 'YES' ? 'selected' : ''}>YES</option>
+            <option value="NO" ${userFilterAccountActive === 'NO' ? 'selected' : ''}>NO</option>
+          </select>
+          <label class="duplicate-filter-option" for="userFilterCountry">Country</label>
+          <select id="userFilterCountry" class="form-control" aria-label="Country">
+            <option value="all" ${countryFilter === 'all' ? 'selected' : ''}>All</option>
+            ${Object.values(COUNTRY_CODES).map((code) => `<option value="${escapeHtml(code)}" ${countryFilter === code ? 'selected' : ''}>${escapeHtml(code)}</option>`).join('')}
+          </select>
+          <label class="duplicate-filter-option" for="userFilterLocation">Location</label>
+          <input id="userFilterLocation" class="form-control" type="text" placeholder="Partial location..." value="${escapeHtml(userFilterLocation)}" />
+          <label class="duplicate-filter-option" for="userFilterHasAssets"><input type="checkbox" id="userFilterHasAssets" ${userFilterHasAssets ? 'checked' : ''}> Assigned assets</label>
+          <div class="column-drawer-footer"><button type="button" class="btn btn-secondary btn-sm" id="resetUsersFiltersBtn">Reset</button></div>
+        </aside>
+      </div>
       <div class="filter-bar">
         <input id="usersSearch" class="search-input" placeholder="Search users by name or email..." value="${escapeHtml(userSearch)}" />
         <input id="userAssetCountFilter" class="search-input" type="number" min="0" placeholder="Assigned assets (count)" value="${escapeHtml(userAssetCountFilter)}" />
+        <select id="userStaffTypeFilter" class="search-input" aria-label="Filter users by staff type">
+          <option value="all">All staff types</option>
+          <option value="External Staff">External Staff</option>
+          <option value="Internal Staff">Internal Staff</option>
+          <option value="">Unclassified</option>
+        </select>
       </div>
       <input id="usersFileInput" type="file" accept=".csv,text/csv" hidden />
       <div class="card inventory-table-wrap">
         <table class="inventory-table">
-          <thead><tr><th><input type="checkbox" id="selectAllUsers" aria-label="Select all users" /></th><th>User ID</th><th>Name</th><th>Email</th><th>Account Active</th><th>Country</th><th>Location</th><th>Assigned assets</th><th>Actions</th></tr></thead>
+          <thead><tr><th><input type="checkbox" id="selectAllUsers" aria-label="Select all users" /></th><th>User ID</th><th>Name</th><th>Staff Type</th><th>Email</th><th>Account Active</th><th>Country</th><th>Location</th><th>Assigned assets</th><th>Actions</th></tr></thead>
           <tbody>${filteredUsers.length ? filteredUsers.map((user, index) => `<tr>
             <td><input type="checkbox" class="user-select-checkbox" data-user-index="${index}" aria-label="Select user" /></td>
             <td>${escapeHtml(user.id || '—')}</td>
             <td>${escapeHtml(user.name)}</td>
+            <td>
+              <select class="staff-type-select" data-user-key="${escapeHtml(user.key)}" aria-label="Staff type for ${escapeHtml(user.name)}">
+                <option value="">Unclassified</option>
+                <option value="External Staff" ${user.staffType === 'External Staff' ? 'selected' : ''}>External Staff</option>
+                <option value="Internal Staff" ${user.staffType === 'Internal Staff' ? 'selected' : ''}>Internal Staff</option>
+              </select>
+              ${user.staffTypeSource === 'manual' ? `<span class="staff-type-manual" title="Manual override — auto-detected: ${escapeHtml(user.staffType || 'Unclassified')}">✎ Manual</span>` : ''}
+              <button type="button" class="btn btn-secondary btn-sm staff-type-reset-btn" data-user-key="${escapeHtml(user.key)}" ${user.staffTypeSource === 'manual' ? '' : 'disabled'} title="Reset to auto-detected">Reset</button>
+            </td>
             <td>${escapeHtml(user.email || '—')}</td>
             <td>${escapeHtml(user.accountActive || 'YES')}</td>
             <td>${escapeHtml(user.country || '—')}</td>
             <td>${escapeHtml(user.location || '—')}</td>
             <td>${user.assets.length}</td>
             <td><button class="btn btn-secondary btn-sm view-user-assets-btn" data-user-index="${index}">View assets</button></td>
-          </tr>`).join('') : '<tr><td colspan="8" class="empty-state">No users match your search, asset count, or this country filter.</td></tr>'}</tbody>
+          </tr>`).join('') : '<tr><td colspan="10" class="empty-state">No users match your search, staff type, asset count, or this country filter.</td></tr>'}</tbody>
         </table>
       </div>
     `;
@@ -520,6 +630,168 @@ App.registerModule('users', (() => {
     userAssetCountFilterInput.addEventListener('change', (event) => {
       userAssetCountFilter = String(event.target.value || '');
       render(container, countryFilter);
+    });
+    const userStaffTypeFilterSelect = container.querySelector('#userStaffTypeFilter');
+    if (userStaffTypeFilterSelect) {
+      userStaffTypeFilterSelect.addEventListener('change', (event) => {
+        userStaffTypeFilter = String(event.target.value || 'all');
+        render(container, countryFilter);
+      });
+    }
+    const usersFilterToggle = container.querySelector('#usersFilterToggle');
+    if (usersFilterToggle) {
+      usersFilterToggle.addEventListener('click', () => {
+        userFilterPanelOpen = !userFilterPanelOpen;
+        render(container, countryFilter);
+      });
+    }
+    const closeUsersFilter = container.querySelector('#closeUsersFilter');
+    if (closeUsersFilter) {
+      closeUsersFilter.addEventListener('click', () => {
+        userFilterPanelOpen = false;
+        render(container, countryFilter);
+      });
+    }
+    const usersFilterBackdrop = container.querySelector('#usersFilterBackdrop');
+    if (usersFilterBackdrop) {
+      usersFilterBackdrop.addEventListener('click', () => {
+        userFilterPanelOpen = false;
+        render(container, countryFilter);
+      });
+    }
+    const userFilterUserIdInput = container.querySelector('#userFilterUserId');
+    if (userFilterUserIdInput) {
+      userFilterUserIdInput.addEventListener('input', (event) => {
+        userFilterUserId = String(event.target.value || '');
+        render(container, countryFilter);
+      });
+    }
+    const userFilterNameInput = container.querySelector('#userFilterName');
+    if (userFilterNameInput) {
+      userFilterNameInput.addEventListener('input', (event) => {
+        userFilterName = String(event.target.value || '');
+        render(container, countryFilter);
+      });
+    }
+    const userFilterEmailInput = container.querySelector('#userFilterEmail');
+    if (userFilterEmailInput) {
+      userFilterEmailInput.addEventListener('input', (event) => {
+        userFilterEmail = String(event.target.value || '');
+        render(container, countryFilter);
+      });
+    }
+    const userFilterStaffTypeSelectDrawer = container.querySelector('#userFilterStaffType');
+    if (userFilterStaffTypeSelectDrawer) {
+      userFilterStaffTypeSelectDrawer.addEventListener('change', (event) => {
+        userStaffTypeFilter = String(event.target.value || 'all');
+        render(container, countryFilter);
+      });
+    }
+    const userFilterAccountActiveSelect = container.querySelector('#userFilterAccountActive');
+    if (userFilterAccountActiveSelect) {
+      userFilterAccountActiveSelect.addEventListener('change', (event) => {
+        userFilterAccountActive = String(event.target.value || '');
+        render(container, countryFilter);
+      });
+    }
+    const userFilterCountrySelect = container.querySelector('#userFilterCountry');
+    if (userFilterCountrySelect) {
+      userFilterCountrySelect.addEventListener('change', (event) => {
+        countryFilter = String(event.target.value || 'all');
+        selectedUserKey = '';
+        selectedUserIndexes.clear();
+        render(container, countryFilter);
+      });
+    }
+    const userFilterLocationInput = container.querySelector('#userFilterLocation');
+    if (userFilterLocationInput) {
+      userFilterLocationInput.addEventListener('input', (event) => {
+        userFilterLocation = String(event.target.value || '');
+        render(container, countryFilter);
+      });
+    }
+    const userFilterHasAssetsCheckbox = container.querySelector('#userFilterHasAssets');
+    if (userFilterHasAssetsCheckbox) {
+      userFilterHasAssetsCheckbox.addEventListener('change', (event) => {
+        userFilterHasAssets = Boolean(event.target.checked);
+        render(container, countryFilter);
+      });
+    }
+    const resetUsersFiltersBtn = container.querySelector('#resetUsersFiltersBtn');
+    if (resetUsersFiltersBtn) {
+      resetUsersFiltersBtn.addEventListener('click', () => {
+        userFilterUserId = '';
+        userFilterName = '';
+        userFilterEmail = '';
+        userFilterLocation = '';
+        userFilterAccountActive = '';
+        userFilterHasAssets = false;
+        userStaffTypeFilter = 'all';
+        userAssetCountFilter = '';
+        userFilterPanelOpen = false;
+        render(container, countryFilter);
+      });
+    }
+    const announceStaffType = (user, staffType, source) => {
+      const live = container.querySelector('#userStaffTypeLive');
+      if (!live) return;
+      live.textContent = source === 'manual'
+        ? `Staff type set to ${staffType || 'Unclassified'} for ${user.name}.`
+        : `Staff type reset to auto-detected value for ${user.name}.`;
+    };
+    container.querySelectorAll('.staff-type-select').forEach((select) => {
+      select.addEventListener('change', async (event) => {
+        const key = event.currentTarget.dataset.userKey;
+        const value = String(event.target.value || '');
+        const target = filteredUsers.find((user) => user.key === key);
+        if (!target) return;
+        const staffType = value || null;
+        const nextUsers = storedUsers().map((user) => userKey(user.Email, user.Name) === key
+          ? { ...user, staff_type: staffType, staff_type_source: 'manual', staffType, staffTypeSource: 'manual' }
+          : user);
+        try {
+          await App.store.set('users', nextUsers);
+          announceStaffType({ ...target, staffType }, staffType, 'manual');
+          Toast.show(`Staff type saved for ${target.name}.`, 'success');
+          render(container, countryFilter);
+        } catch (error) {
+          Toast.show(`Could not save staff type: ${error.message || error}`, 'error', 6000);
+        }
+      });
+    });
+    container.querySelectorAll('.staff-type-reset-btn').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const key = button.dataset.userKey;
+        const target = filteredUsers.find((user) => user.key === key);
+        if (!target) return;
+        const detected = detectStaffType(target.name);
+        const staffType = detected.staffType;
+        const previousUsers = App.store.get('users');
+        const optimisticUsers = storedUsers().map((user) => userKey(user.Email, user.Name) === key
+          ? { ...user, staff_type: staffType, staff_type_source: 'auto', staffType, staffTypeSource: 'auto' }
+          : user);
+        App.store.cache.set('users', optimisticUsers);
+        render(container, countryFilter);
+        try {
+          const response = await fetch('/api/users/staff-type/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ UserID: String(target.id || '') })
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+          App.store.cache.set('users', optimisticUsers.map((user) => userKey(user.Email, user.Name) === key
+            ? { ...user, staff_type: result.staffType ?? staffType, staff_type_source: 'auto', staffType: result.staffType ?? staffType, staffTypeSource: 'auto' }
+            : user));
+          announceStaffType({ ...target, staffType: result.staffType ?? staffType }, result.staffType ?? staffType, 'auto');
+          Toast.show(`Staff type reset to auto-detected value for ${target.name}.`, 'success');
+          render(container, countryFilter);
+        } catch (error) {
+          App.store.cache.set('users', previousUsers);
+          render(container, countryFilter);
+          Toast.show(`Could not reset staff type: ${error.message || error}`, 'error', 6000);
+        }
+      });
     });
     container.querySelectorAll('.user-select-checkbox').forEach((checkbox) => {
       checkbox.addEventListener('change', () => {

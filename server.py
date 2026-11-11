@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -39,6 +40,10 @@ ASSET_FIELD_ENUMS = {
     "Staff Member Lifecycle Status": ("Active", "Leaver", "Contractor", "Unknown"),
     "Asset type": ("Laptop", "Firewall", "UPS", "AccessPoint", "Switch"),
 }
+STAFF_TYPE_SOURCE_AUTO = "auto"
+STAFF_TYPE_SOURCE_MANUAL = "manual"
+STAFF_TYPE_EXTERNAL = "External Staff"
+STAFF_TYPE_INTERNAL = "Internal Staff"
 ELIGIBLE_HANDOUT_STATUS_NAMES = {
     "ready to deploy", "deployable", "available", "available for handover", "ready for handover",
 }
@@ -127,6 +132,10 @@ def connect_database(path: Path | None = None) -> sqlite3.Connection:
         connection.execute("ALTER TABLE users ADD COLUMN name TEXT NOT NULL DEFAULT ''")
     if "UserID" not in user_columns and "user_id" in user_columns:
         connection.execute("ALTER TABLE users RENAME COLUMN user_id TO UserID")
+    if "staff_type" not in user_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN staff_type TEXT")
+    if "staff_type_source" not in user_columns:
+        connection.execute("ALTER TABLE users ADD COLUMN staff_type_source TEXT NOT NULL DEFAULT 'auto'")
     connection.execute("UPDATE users SET name=COALESCE(json_extract(data_json, '$.Name'), '') WHERE name='' ")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_users_name ON users(name COLLATE NOCASE)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_users_email_value ON users(email COLLATE NOCASE)")
@@ -564,6 +573,38 @@ def _read_checkout_history(connection: sqlite3.Connection) -> list[dict[str, Any
     )]
 
 
+EXT_MARKER_RE = re.compile(r"(?:^|[^a-z0-9])ext([^a-z0-9]|$)", re.IGNORECASE)
+PAREN_GROUP_RE = re.compile(r"\(([^()]*)\)")
+VENDOR_SPLIT_RE = re.compile(r"[\s\-–—/]+")
+
+
+def _detect_staff_type(name: str) -> tuple[str | None, str | None, bool]:
+    """Detect Staff Type from a user Name.
+
+    Returns (staff_type, vendor, suspicious):
+      - staff_type is "External Staff", "Internal Staff", or None (unclassified).
+      - vendor is the parsed vendor token (e.g. "FPT") or None.
+      - suspicious flags names that contain an EXT marker outside parentheses.
+
+    Defaults to Internal Staff when no EXT marker is present.
+    """
+    text = str(name or "").strip()
+    if not text:
+        return None, None, False
+    paren = PAREN_GROUP_RE.search(text)
+    if not paren:
+        return STAFF_TYPE_INTERNAL, None, False
+    group = paren.group(1)
+    ext = EXT_MARKER_RE.search(group)
+    if not ext:
+        return STAFF_TYPE_INTERNAL, None, False
+    after = group[ext.end():].split("[", 1)[0]
+    vendor = VENDOR_SPLIT_RE.split(after.strip())[0].strip() or None
+    outside = PAREN_GROUP_RE.sub("", text)
+    suspicious = bool(EXT_MARKER_RE.search(outside))
+    return STAFF_TYPE_EXTERNAL, vendor, suspicious
+
+
 def _replace_users(connection: sqlite3.Connection, records: list[dict[str, Any]]) -> None:
     user_ids: set[str] = set()
     emails: set[str] = set()
@@ -584,27 +625,60 @@ def _replace_users(connection: sqlite3.Connection, records: list[dict[str, Any]]
                 raise ValueError(f"Duplicate user email address: {email}.")
             emails.add(normalized_email)
 
+    existing_staff: dict[str, tuple[str | None, str]] = {}
+    for row in connection.execute("SELECT UserID, staff_type, staff_type_source FROM users"):
+        existing_staff[str(row["UserID"] or "").strip()] = (
+            str(row["staff_type"] or "").strip() or None,
+            str(row["staff_type_source"] or "").strip() or STAFF_TYPE_SOURCE_AUTO,
+        )
+
     connection.execute("DELETE FROM users")
     for position, record in enumerate(records):
         email = _as_text(record, "Email").strip()
+        user_id = _as_text(record, "UserID").strip()
+        name = _as_text(record, "Name").strip()
+        existing_staff_type, existing_staff_source = existing_staff.get(user_id, (None, STAFF_TYPE_SOURCE_AUTO))
+        incoming_staff_type_source = _as_text(record, "staff_type_source") or STAFF_TYPE_SOURCE_AUTO
+        manual = existing_staff_source == STAFF_TYPE_SOURCE_MANUAL and incoming_staff_type_source != STAFF_TYPE_SOURCE_MANUAL
+        if manual:
+            # A manual override is authoritative and must survive re-imports / re-detection.
+            staff_type = existing_staff_type
+            staff_type_source = STAFF_TYPE_SOURCE_MANUAL
+        else:
+            staff_type_source = incoming_staff_type_source
+            staff_type = _as_text(record, "staff_type") or None
+            if staff_type_source == STAFF_TYPE_SOURCE_AUTO and not staff_type:
+                staff_type, _vendor, _suspicious = _detect_staff_type(name)
+        payload = dict(record)
+        payload["staff_type"] = staff_type
+        payload["staff_type_source"] = staff_type_source
         connection.execute(
-            """INSERT INTO users (UserID, position, name, email, normalized_email, data_json)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO users (UserID, position, name, email, normalized_email, staff_type, staff_type_source, data_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 _as_text(record, "UserID").strip(),
                 position,
                 _as_text(record, "Name").strip(),
                 email,
                 email.casefold(),
-                json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+                staff_type,
+                staff_type_source,
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             ),
         )
 
 
 def _read_users(connection: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [json.loads(row["data_json"]) for row in connection.execute(
-        "SELECT data_json FROM users ORDER BY position, UserID"
-    )]
+    rows = connection.execute(
+        "SELECT data_json, staff_type, staff_type_source FROM users ORDER BY position, UserID"
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        record = json.loads(row["data_json"])
+        record["staff_type"] = row["staff_type"]
+        record["staff_type_source"] = row["staff_type_source"]
+        result.append(record)
+    return result
 
 
 def _read_asset_field_options(connection: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
@@ -1289,6 +1363,38 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                 self.log_error("Field option save failed: %s", error)
                 self._send_json(500, {"error": "Could not save field option."})
             return
+        if self.path == "/api/users/staff-type/reset":
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Staff type reset must use a JSON object.")
+                user_id = _as_text(payload, "UserID").strip() or _as_text(payload, "userId").strip()
+                if not user_id:
+                    raise ValueError("Staff type reset requires a User ID.")
+                with _DB_LOCK, database_connection() as connection:
+                    row = connection.execute(
+                        "SELECT UserID, name, staff_type, staff_type_source FROM users WHERE UserID=? COLLATE NOCASE",
+                        (user_id,),
+                    ).fetchone()
+                    if row is None:
+                        self._send_json(404, {"error": f"User not found: {user_id}"})
+                        return
+                    staff_type, _vendor, _suspicious = _detect_staff_type(row["name"])
+                    connection.execute(
+                        "UPDATE users SET staff_type=?, staff_type_source=? WHERE UserID=?",
+                        (staff_type, STAFF_TYPE_SOURCE_AUTO, user_id),
+                    )
+                self._send_json(200, {
+                    "UserID": user_id,
+                    "staffType": staff_type,
+                    "staffTypeSource": STAFF_TYPE_SOURCE_AUTO,
+                })
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Staff type reset failed: %s", error)
+                self._send_json(500, {"error": "Could not reset the user staff type."})
+            return
         if self.path != "/api/bootstrap":
             self._send_json(404, {"error": "API route not found."})
             return
@@ -1380,6 +1486,7 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
         except (OSError, sqlite3.Error) as error:
             self.log_error("Database write failed: %s", error)
             self._send_json(500, {"error": "Could not save data to the SQLite database."})
+        return
 
     def log_message(self, format_string: str, *args: Any) -> None:
         super().log_message(format_string, *args)
