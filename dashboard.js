@@ -120,7 +120,16 @@ App.registerModule('dashboard', {
       allOption.value = '';
       allOption.textContent = `All ${filter.label.toLowerCase()}`;
       select.append(allOption);
-      label.append(caption, select);
+      if (filter.key === 'country') {
+        label.classList.add('dashboard-filter-with-flag');
+        const flag = document.createElement('span');
+        flag.className = 'country-flag-display';
+        flag.setAttribute('aria-hidden', 'true');
+        flag.dataset.countryFlagFor = 'dashboard-filter-country';
+        label.append(caption, flag, select);
+      } else {
+        label.append(caption, select);
+      }
       filterGrid.append(label);
     }
 
@@ -166,6 +175,7 @@ App.registerModule('dashboard', {
       this.load(page, filterGrid, generation);
     }, { signal: eventSignal });
     filterGrid.addEventListener('change', () => {
+      this.updateCountryFlag(filterGrid);
       this.updateUrl(filterGrid);
       this.load(page, filterGrid, generation);
     }, { signal: eventSignal });
@@ -181,6 +191,18 @@ App.registerModule('dashboard', {
     this.load(page, filterGrid, generation);
   },
 
+  updateCountryFlag(filterGrid) {
+    const select = filterGrid.querySelector('[data-filter-key="country"]');
+    const flag = filterGrid.querySelector('[data-country-flag-for="dashboard-filter-country"]');
+    if (!select || !flag) return;
+    const value = select.value;
+    if (!value) {
+      flag.innerHTML = '';
+      return;
+    }
+    flag.innerHTML = window.CountryFlags?.render?.(value, 'country-flag') || window.CountryFlags?.placeholderSvg?.() || '';
+  },
+
   async populateFilters(filterGrid, generation) {
     try {
       const response = await fetch('/api/bootstrap');
@@ -188,6 +210,7 @@ App.registerModule('dashboard', {
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       if (generation !== this.renderGeneration) return;
       this.filterOptions = result.filterOptions || {};
+      this.countryFilterReport = result.countryFilterReport || null;
       for (const filter of DASHBOARD_FILTERS) {
         const select = filterGrid.querySelector(`[data-filter-key="${filter.key}"]`);
         for (const value of this.filterOptions[filter.optionsKey] || []) {
@@ -199,6 +222,7 @@ App.registerModule('dashboard', {
         }
       }
       this.restoreFilters(filterGrid);
+      this.updateCountryFlag(filterGrid);
     } catch (error) {
       if (generation !== this.renderGeneration) return;
       this.showMessage(filterGrid.closest('.enterprise-dashboard').querySelector('.dashboard-message'), `Filter choices could not be loaded: ${error.message || error}`, true);
@@ -221,17 +245,24 @@ App.registerModule('dashboard', {
 
   restoreFilters(filterGrid) {
     const params = new URLSearchParams(window.location.search);
+    let changed = false;
     for (const filter of DASHBOARD_FILTERS) {
       const value = params.get(filter.key) || '';
       const select = filterGrid.querySelector(`[data-filter-key="${filter.key}"]`);
-      if (value && ![...select.options].some((option) => option.value === value)) {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = value;
-        select.append(option);
+      if (!select) continue;
+      if (!value) {
+        select.value = '';
+        continue;
       }
-      select.value = value;
+      if ([...select.options].some((option) => option.value === value)) {
+        select.value = value;
+      } else {
+        select.value = '';
+        changed = true;
+      }
     }
+    if (changed) this.updateUrl(filterGrid);
+    this.updateCountryFlag(filterGrid);
   },
 
   showLoading(page) {

@@ -72,7 +72,7 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 - `GET /api/health`: report the active SQLite database path and health.
 - `POST /api/replacement-history/save`: validate and save a replacement event and its new device assignment atomically.
 - `GET /api/dashboard` and `/api/dashboard/records`: dashboard metrics and drill-through rows.
-- Dataset APIs: `PUT /api/inventory` (validates deployment status, condition, disposition method, and `is_archived`), `/api/warranty`, `/api/replacement-history`, `/api/checkout-history`, `/api/users`, `/api/status-labels`, and `POST /api/users/staff-type/reset` (clears a manual staff-type override and recomputes from the user name).
+- Dataset APIs: `PUT /api/inventory` (validates deployment status, condition, disposition method, and `is_archived`), `/api/warranty`, `/api/replacement-history`, `/api/checkout-history`, `/api/users`, `/api/status-labels`, `POST /api/users/staff-type` (set a single user's staff type as a manual override with server-side validation and commit), and `POST /api/users/staff-type/reset` (clear a manual staff-type override and recompute from the user name).
 - `GET /api/backup` and `POST /api/restore`: consistent SQLite backup and validated restore.
 
 ## Maintenance notes

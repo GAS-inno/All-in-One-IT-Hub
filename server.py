@@ -638,18 +638,27 @@ def _replace_users(connection: sqlite3.Connection, records: list[dict[str, Any]]
         user_id = _as_text(record, "UserID").strip()
         name = _as_text(record, "Name").strip()
         existing_staff_type, existing_staff_source = existing_staff.get(user_id, (None, STAFF_TYPE_SOURCE_AUTO))
-        incoming_staff_type_source = _as_text(record, "staff_type_source") or STAFF_TYPE_SOURCE_AUTO
-        manual = existing_staff_source == STAFF_TYPE_SOURCE_MANUAL and incoming_staff_type_source != STAFF_TYPE_SOURCE_MANUAL
-        if manual:
+        has_explicit_staff_type_source = any(key in record for key in ("staff_type_source", "staffTypeSource"))
+        incoming_staff_type_source = _as_text(record, "staff_type_source", "staffTypeSource") or STAFF_TYPE_SOURCE_AUTO
+        preserve_manual = (
+            existing_staff_source == STAFF_TYPE_SOURCE_MANUAL
+            and incoming_staff_type_source != STAFF_TYPE_SOURCE_MANUAL
+            and not (incoming_staff_type_source == STAFF_TYPE_SOURCE_AUTO and has_explicit_staff_type_source)
+        )
+        if preserve_manual:
             # A manual override is authoritative and must survive re-imports / re-detection.
             staff_type = existing_staff_type
             staff_type_source = STAFF_TYPE_SOURCE_MANUAL
         else:
             staff_type_source = incoming_staff_type_source
-            staff_type = _as_text(record, "staff_type") or None
-            if staff_type_source == STAFF_TYPE_SOURCE_AUTO and not staff_type:
+            staff_type_raw = record.get("staff_type", record.get("staffType"))
+            staff_type = str(staff_type_raw).strip() if staff_type_raw is not None else ""
+            staff_type = staff_type or None
+            if staff_type_source == STAFF_TYPE_SOURCE_AUTO and staff_type is None:
                 staff_type, _vendor, _suspicious = _detect_staff_type(name)
         payload = dict(record)
+        payload.pop("staffType", None)
+        payload.pop("staffTypeSource", None)
         payload["staff_type"] = staff_type
         payload["staff_type_source"] = staff_type_source
         connection.execute(
@@ -1228,16 +1237,95 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                     replacements = _read_replacement_history(connection)
                     checkout_history = _read_checkout_history(connection)
                     status_labels = _read_status_labels(connection)
+                    users = _read_users(connection)
                 options = filter_options(records, status_labels=status_labels, checkout_history=checkout_history)
                 options["warrantyStatus"] = options.pop("warranty", [])
                 options["plannedAction"] = options.pop("planned_action", [])
                 options["assetStatus"] = options.pop("asset_status", [])
                 options["onlineStatus"] = options.pop("online_status", [])
+
+                def _country_raw(value: Any) -> str:
+                    return str(value or "").strip()
+
+                user_country_raws = []
+                seen_user_country_keys = set()
+                for user in users:
+                    raw = _country_raw(user.get("Country"))
+                    if not raw:
+                        continue
+                    key = " ".join(raw.casefold().split())
+                    if key in seen_user_country_keys:
+                        continue
+                    seen_user_country_keys.add(key)
+                    user_country_raws.append(raw)
+                user_country_raws.sort(key=str.casefold)
+
+                asset_country_info = []
+                seen_asset_country_keys = set()
+                no_country_asset_count = 0
+                for record in records:
+                    raw = _country_raw(record.get("Country"))
+                    if not raw:
+                        # fall back to same asset-country derivation used by dashboard metrics
+                        raw = _country_raw(record.get("Intune_Group_APAC_Devices - Copy.Country"))
+                    if not raw:
+                        no_country_asset_count += 1
+                        continue
+                    key = " ".join(raw.casefold().split())
+                    if key in seen_asset_country_keys:
+                        continue
+                    seen_asset_country_keys.add(key)
+                    asset_country_info.append((key, raw))
+
+                user_country_keys = set(seen_user_country_keys)
+                asset_only_countries = sorted(
+                    [raw for key, raw in asset_country_info if key not in user_country_keys],
+                    key=str.casefold,
+                )
+                country_options = list(user_country_raws)
+                for raw in asset_only_countries:
+                    key = " ".join(raw.casefold().split())
+                    if key not in user_country_keys:
+                        country_options.append(raw)
+                        user_country_keys.add(key)
+
+                # Best-effort reporting for assets linked to users with no country (by primary user email).
+                user_country_by_email = {}
+                for user in users:
+                    email = " ".join(str(user.get("Email") or "").strip().casefold().split())
+                    if not email:
+                        continue
+                    user_country_by_email[email] = _country_raw(user.get("Country"))
+                assets_linked_to_user_without_country = 0
+                for record in records:
+                    email = " ".join(str(record.get("Primary user email address") or record.get("Primary user UPN") or "").strip().casefold().split())
+                    if not email or email not in user_country_by_email:
+                        continue
+                    if not user_country_by_email[email]:
+                        assets_linked_to_user_without_country += 1
+
+                if no_country_asset_count > 0 or assets_linked_to_user_without_country > 0:
+                    # Explicit option to avoid silently dropping rows from view/filtering context.
+                    if "(No country)" not in country_options:
+                        country_options.append("(No country)")
+                options["country"] = country_options
+
                 self._send_json(200, {
                     "filterOptions": options,
                     "sourceRecordCount": len(records),
                     "replacementRecordCount": len(replacements),
                     "checkoutEventCount": len(checkout_history),
+                    "countryFilterReport": {
+                        "source": "users",
+                        "userCountryCount": len(user_country_raws),
+                        "userCountries": user_country_raws,
+                        "assetOnlyCountryCount": len(asset_only_countries),
+                        "assetOnlyCountries": asset_only_countries,
+                        "noCountryAssetCount": no_country_asset_count,
+                        "assetsLinkedToUserWithoutCountryCount": assets_linked_to_user_without_country,
+                        "noCountryOptionIncluded": ("(No country)" in country_options),
+                        "note": "Country options are derived from distinct user countries (trimmed, de-duped case-insensitively, sorted). Asset-only country values are appended so asset-country filtering still matches; '(No country)' is included when assets have no country value or are linked to a user with no country. Dashboard filtering/counts/charts continue to use asset country values."
+                    },
                 })
             except (OSError, sqlite3.Error) as error:
                 self.log_error("Dashboard bootstrap failed: %s", error)
@@ -1363,6 +1451,50 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                 self.log_error("Field option save failed: %s", error)
                 self._send_json(500, {"error": "Could not save field option."})
             return
+        if self.path == "/api/users/staff-type":
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Staff type update must use a JSON object.")
+                user_id = _as_text(payload, "UserID").strip() or _as_text(payload, "userId").strip()
+                if not user_id:
+                    raise ValueError("Staff type update requires a User ID.")
+                raw_staff_type = payload.get("staffType", payload.get("staff_type"))
+                if raw_staff_type is None:
+                    staff_type = None
+                else:
+                    staff_type = str(raw_staff_type).strip()
+                if staff_type == "":
+                    staff_type = None
+                if staff_type not in {None, "External Staff", "Internal Staff"}:
+                    raise ValueError("Staff type must be External Staff, Internal Staff, or Unclassified.")
+                with _DB_LOCK, database_connection() as connection:
+                    row = connection.execute(
+                        "SELECT UserID, data_json FROM users WHERE UserID=? COLLATE NOCASE",
+                        (user_id,),
+                    ).fetchone()
+                    if row is None:
+                        self._send_json(404, {"error": f"User not found: {user_id}"})
+                        return
+                    record = json.loads(row["data_json"])
+                    record["staff_type"] = staff_type
+                    record["staff_type_source"] = STAFF_TYPE_SOURCE_MANUAL
+                    connection.execute(
+                        "UPDATE users SET staff_type=?, staff_type_source=?, data_json=? WHERE UserID=? COLLATE NOCASE",
+                        (staff_type, STAFF_TYPE_SOURCE_MANUAL, json.dumps(record, ensure_ascii=False, separators=(",", ":")), user_id),
+                    )
+                    connection.commit()
+                self._send_json(200, {
+                    "UserID": user_id,
+                    "staffType": staff_type,
+                    "staffTypeSource": STAFF_TYPE_SOURCE_MANUAL,
+                })
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Staff type update failed: %s", error)
+                self._send_json(500, {"error": "Could not save the user staff type."})
+            return
         if self.path == "/api/users/staff-type/reset":
             try:
                 payload = self._read_json()
@@ -1373,17 +1505,21 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                     raise ValueError("Staff type reset requires a User ID.")
                 with _DB_LOCK, database_connection() as connection:
                     row = connection.execute(
-                        "SELECT UserID, name, staff_type, staff_type_source FROM users WHERE UserID=? COLLATE NOCASE",
+                        "SELECT UserID, name, data_json FROM users WHERE UserID=? COLLATE NOCASE",
                         (user_id,),
                     ).fetchone()
                     if row is None:
                         self._send_json(404, {"error": f"User not found: {user_id}"})
                         return
                     staff_type, _vendor, _suspicious = _detect_staff_type(row["name"])
+                    record = json.loads(row["data_json"])
+                    record["staff_type"] = staff_type
+                    record["staff_type_source"] = STAFF_TYPE_SOURCE_AUTO
                     connection.execute(
-                        "UPDATE users SET staff_type=?, staff_type_source=? WHERE UserID=?",
-                        (staff_type, STAFF_TYPE_SOURCE_AUTO, user_id),
+                        "UPDATE users SET staff_type=?, staff_type_source=?, data_json=? WHERE UserID=? COLLATE NOCASE",
+                        (staff_type, STAFF_TYPE_SOURCE_AUTO, json.dumps(record, ensure_ascii=False, separators=(",", ":")), user_id),
                     )
+                    connection.commit()
                 self._send_json(200, {
                     "UserID": user_id,
                     "staffType": staff_type,

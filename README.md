@@ -127,13 +127,11 @@ Each Users record carries a **Staff Type** of **External Staff** or **Internal S
 
 - **Auto-detection** runs when a user is created or imported: NexIT inspects the user **Name** for an `EXT` marker inside parentheses, such as `(EXT - FPT)`, `(Ext-FPT)`, `(EXT-CSS)`, or `(EXT - ENCORA [Ex Indecomm])`. The marker must be a standalone token, so words like *External*, *Extra*, or *Ex* do not cause a false match. Names without an `EXT` marker default to **Internal Staff**. The vendor text after the marker is shown as a subtitle/badge under the Staff Type (for example, `FPT`); vendor spellings are surfaced as written rather than silently normalized.
 
-- **Manual override** uses the per-row Staff Type dropdown in the Users table. Choosing a value saves it with source **manual**, which permanently overrides the auto-detected value until you choose **Reset to auto-detected**.
+- **Staff Type display and editing:** the Users table **Staff Type** column shows the current value as plain text. Staff Type can be set when adding a user (**+ Add user**, with **Auto-detect** as the default) or when bulk-editing selected users (**Edit selected**). Saving a chosen Staff Type records it as a **manual** override; choosing **Auto-detect** recomputes from the user name.
 
-- **Reset** clears a manual override and recomputes the Staff Type from the user name.
+- **Reset/recompute:** manual overrides are preserved until recomputed (for example via Auto-detect in **Edit selected** or the staff-type reset API). Re-imports do not replace a manual override.
 
 - The Users summary line reports external, internal, and unclassified staff totals, and the **Filter** slide-over panel can filter by Staff Type, Account Active, Country, Location, Assigned assets, and free-text User ID/Name/Email.
-
-- The **Staff Type** can also be set when adding a user (**+ Add user**, with **Auto-detect** as the default) or when bulk-editing selected users (**Edit selected**). Saving a chosen Staff Type records it as a **manual** override; **Auto-detect** recomputes from the name. The per-row **Reset** action clears a manual override.
 
 The one-time migration `migrations/migrate_add_staff_type.py` backfills `staff_type` and `staff_type_source` for existing users and sets source to `auto`. Preview with `python3 migrations/migrate_add_staff_type.py --dry-run`; apply with `python3 migrations/migrate_add_staff_type.py --apply`. The migration is idempotent, backs up the SQLite database before applying, writes `migration_log.json`, and never overwrites rows whose source is already `manual`. Imports run the same auto-detection; a manual override is never replaced by a later import.
 

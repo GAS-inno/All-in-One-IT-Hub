@@ -61,6 +61,16 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 4px; }
 
+/* Country flags (self-hosted inline SVG) */
+.country-flag, .country-flag-display svg, .country-flag svg { width: 24px; height: 16px; display: inline-block; vertical-align: middle; }
+.country-flag-display { display: inline-flex; align-items: center; margin-right: 8px; min-width: 24px; }
+.country-flag-placeholder { display: inline-block; width: 24px; height: 16px; }
+.topbar-actions { display: flex; align-items: center; gap: 8px; }
+.dashboard-filter-with-flag { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: 8px; align-items: end; }
+.dashboard-filter-with-flag > span:first-child { grid-column: 1 / -1; }
+.dashboard-filter-with-flag .country-flag-display { grid-column: 1; grid-row: 2; margin-right: 0; }
+.dashboard-filter-with-flag select { grid-column: 2; grid-row: 2; }
+
 /* ============================================
    SIDEBAR
    ============================================ */

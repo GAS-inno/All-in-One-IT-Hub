@@ -242,7 +242,7 @@ def _dimension_value(
     active_checkout_keys: set[str] | None = None,
 ) -> str:
     if field == "country":
-        return _first(record, field) or UNKNOWN
+        return _first(record, field) or "(No country)"
     if field == "department":
         return _first(record, field) or UNKNOWN
     if field == "os":

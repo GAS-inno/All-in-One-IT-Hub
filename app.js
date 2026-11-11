@@ -115,6 +115,17 @@ const App = {
       this.fieldOptions = result.fieldOptions || {};
       this.initialized = true;
       if (result.migrated) Toast.show('Existing browser inventory was copied into the local SQLite database.', 'success', 6000);
+    },
+    async refreshUsers() {
+      const response = await fetch('/api/bootstrap', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (Array.isArray(result.users)) this.cache.set('users', result.users);
+      if (result.fieldOptions) this.fieldOptions = result.fieldOptions;
+      return result.users || [];
     }
   },
 
@@ -319,18 +330,40 @@ const DateUtil = {
    SHARED COUNTRIES MAP  (mirrors Intune groups)
    ============================================================ */
 const COUNTRIES = {
-  all: '🌐 All',
-  SG: '🇸🇬 Singapore',
-  AU: '🇦🇺 Australia',
-  MY: '🇲🇾 Malaysia',
-  TH: '🇹🇭 Thailand',
-  IN: '🇮🇳 India',
-  ID: '🇮🇩 Indonesia',
-  VN: '🇻🇳 Vietnam',
-  PH: '🇵🇭 Philippines',
-  JP: '🇯🇵 Japan',
-  US: '🇺🇸 United States'
+  all: 'All',
+  SG: 'Singapore',
+  AU: 'Australia',
+  MY: 'Malaysia',
+  TH: 'Thailand',
+  IN: 'India',
+  ID: 'Indonesia',
+  VN: 'Vietnam',
+  PH: 'Philippines',
+  JP: 'Japan',
+  US: 'United States'
 };
+
+function countryDisplayName(value) {
+  if (value == null || value === '' || value === 'all') return 'All Countries';
+  const iso = window.CountryFlags?.normalizeToIso2?.(value);
+  if (iso && COUNTRIES[iso]) return COUNTRIES[iso];
+  return String(value);
+}
+
+function renderCountryFlag(value) {
+  if (value == null || value === '' || value === 'all') {
+    return '<span class="country-flag-placeholder" aria-hidden="true"></span>';
+  }
+  return window.CountryFlags?.render?.(value, 'country-flag') || '';
+}
+
+function updateGlobalCountryFlag() {
+  const el = document.getElementById('globalCountryFlag');
+  const select = document.getElementById('globalCountryFilter');
+  if (!el || !select) return;
+  const value = select.value;
+  el.innerHTML = value === 'all' ? '' : renderCountryFlag(value || select.options[select.selectedIndex]?.textContent || '');
+}
 
 /* ============================================================
    UI HELPERS
@@ -390,15 +423,20 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Global country filter
-  document.getElementById('globalCountryFilter').addEventListener('change', e => {
-    App.countryFilter = e.target.value;
-    const mod = App.modules[App.currentModule];
-    if (mod && mod.onCountryChange) {
-      mod.onCountryChange(e.target.value);
-    } else {
-      App.navigateTo(App.currentModule);
-    }
-  });
+  const globalCountryFilter = document.getElementById('globalCountryFilter');
+  if (globalCountryFilter) {
+    globalCountryFilter.addEventListener('change', e => {
+      App.countryFilter = e.target.value;
+      updateGlobalCountryFlag();
+      const mod = App.modules[App.currentModule];
+      if (mod && mod.onCountryChange) {
+        mod.onCountryChange(e.target.value);
+      } else {
+        App.navigateTo(App.currentModule);
+      }
+    });
+    updateGlobalCountryFlag();
+  }
 
   // Modal close
   document.getElementById('modalClose').addEventListener('click', () => Modal.close());
@@ -410,6 +448,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Load inventory from SQLite before rendering any module.
   App.store.initialize().then(() => {
     App.modules.inventory?.refreshDeviceTypeNavigation?.();
+    updateGlobalCountryFlag();
     App.navigateTo('dashboard');
   }).catch((error) => {
     console.error('Could not connect to the local SQLite server.', error);

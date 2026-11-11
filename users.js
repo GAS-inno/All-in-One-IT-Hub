@@ -537,15 +537,7 @@ App.registerModule('users', (() => {
             <td><input type="checkbox" class="user-select-checkbox" data-user-index="${index}" aria-label="Select user" /></td>
             <td>${escapeHtml(user.id || '—')}</td>
             <td>${escapeHtml(user.name)}</td>
-            <td>
-              <select class="staff-type-select" data-user-key="${escapeHtml(user.key)}" aria-label="Staff type for ${escapeHtml(user.name)}">
-                <option value="">Unclassified</option>
-                <option value="External Staff" ${user.staffType === 'External Staff' ? 'selected' : ''}>External Staff</option>
-                <option value="Internal Staff" ${user.staffType === 'Internal Staff' ? 'selected' : ''}>Internal Staff</option>
-              </select>
-              ${user.staffTypeSource === 'manual' ? `<span class="staff-type-manual" title="Manual override — auto-detected: ${escapeHtml(user.staffType || 'Unclassified')}">✎ Manual</span>` : ''}
-              <button type="button" class="btn btn-secondary btn-sm staff-type-reset-btn" data-user-key="${escapeHtml(user.key)}" ${user.staffTypeSource === 'manual' ? '' : 'disabled'} title="Reset to auto-detected">Reset</button>
-            </td>
+            <td>${escapeHtml(user.staffType || 'Unclassified')}</td>
             <td>${escapeHtml(user.email || '—')}</td>
             <td>${escapeHtml(user.accountActive || 'YES')}</td>
             <td>${escapeHtml(user.country || '—')}</td>
@@ -739,67 +731,7 @@ App.registerModule('users', (() => {
         render(container, countryFilter);
       });
     }
-    const announceStaffType = (user, staffType, source) => {
-      const live = container.querySelector('#userStaffTypeLive');
-      if (!live) return;
-      live.textContent = source === 'manual'
-        ? `Staff type set to ${staffType || 'Unclassified'} for ${user.name}.`
-        : `Staff type reset to auto-detected value for ${user.name}.`;
-    };
-    container.querySelectorAll('.staff-type-select').forEach((select) => {
-      select.addEventListener('change', async (event) => {
-        const key = event.currentTarget.dataset.userKey;
-        const value = String(event.target.value || '');
-        const target = filteredUsers.find((user) => user.key === key);
-        if (!target) return;
-        const staffType = value || null;
-        const nextUsers = storedUsers().map((user) => userKey(user.Email, user.Name) === key
-          ? { ...user, staff_type: staffType, staff_type_source: 'manual', staffType, staffTypeSource: 'manual' }
-          : user);
-        try {
-          await App.store.set('users', nextUsers);
-          announceStaffType({ ...target, staffType }, staffType, 'manual');
-          Toast.show(`Staff type saved for ${target.name}.`, 'success');
-          render(container, countryFilter);
-        } catch (error) {
-          Toast.show(`Could not save staff type: ${error.message || error}`, 'error', 6000);
-        }
-      });
-    });
-    container.querySelectorAll('.staff-type-reset-btn').forEach((button) => {
-      button.addEventListener('click', async () => {
-        const key = button.dataset.userKey;
-        const target = filteredUsers.find((user) => user.key === key);
-        if (!target) return;
-        const detected = detectStaffType(target.name);
-        const staffType = detected.staffType;
-        const previousUsers = App.store.get('users');
-        const optimisticUsers = storedUsers().map((user) => userKey(user.Email, user.Name) === key
-          ? { ...user, staff_type: staffType, staff_type_source: 'auto', staffType, staffTypeSource: 'auto' }
-          : user);
-        App.store.cache.set('users', optimisticUsers);
-        render(container, countryFilter);
-        try {
-          const response = await fetch('/api/users/staff-type/reset', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ UserID: String(target.id || '') })
-          });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-          App.store.cache.set('users', optimisticUsers.map((user) => userKey(user.Email, user.Name) === key
-            ? { ...user, staff_type: result.staffType ?? staffType, staff_type_source: 'auto', staffType: result.staffType ?? staffType, staffTypeSource: 'auto' }
-            : user));
-          announceStaffType({ ...target, staffType: result.staffType ?? staffType }, result.staffType ?? staffType, 'auto');
-          Toast.show(`Staff type reset to auto-detected value for ${target.name}.`, 'success');
-          render(container, countryFilter);
-        } catch (error) {
-          App.store.cache.set('users', previousUsers);
-          render(container, countryFilter);
-          Toast.show(`Could not reset staff type: ${error.message || error}`, 'error', 6000);
-        }
-      });
-    });
+
     container.querySelectorAll('.user-select-checkbox').forEach((checkbox) => {
       checkbox.addEventListener('change', () => {
         const index = Number(checkbox.dataset.userIndex);
@@ -877,9 +809,17 @@ App.registerModule('users', (() => {
             || (target.oldEmail && normalize(user.Email) === target.oldEmail)
             || (!target.oldEmail && target.oldName && normalize(user.Name) === target.oldName)
           ));
-          const nextUsers = storedUsers().map((user) => isTargetUser(user)
-            ? { ...user, ...updated, UserID: user.UserID }
-            : user);
+          const nextUsers = storedUsers().map((user) => {
+            if (!isTargetUser(user)) return user;
+            return {
+              ...user,
+              ...updated,
+              // Keep both key styles so server-side replace is unambiguous.
+              staffType: updated.staff_type,
+              staffTypeSource: updated.staff_type_source,
+              UserID: user.UserID
+            };
+          });
           const inventory = App.store.get('inventory') || [];
           const nextInventory = inventory.map((device) => {
             const email = normalize(device['Primary user email address'] || device['Primary user UPN']);
@@ -922,6 +862,10 @@ App.registerModule('users', (() => {
               await App.store.set('checkoutHistory', nextCheckoutHistory);
             }
             await App.store.set('users', nextUsers);
+            // Refresh from server so the table reflects the authoritative persisted value.
+            if (typeof App.store.refreshUsers === 'function') {
+              await App.store.refreshUsers();
+            }
             Modal.close();
             render(container, countryFilter);
             Toast.show(`Updated ${toEdit.length} user${toEdit.length === 1 ? '' : 's'}.`, 'success');

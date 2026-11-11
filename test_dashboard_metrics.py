@@ -66,6 +66,23 @@ class DashboardMetricTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown dashboard metric"):
             matching_record_indexes(self.records, {}, "not-a-metric", self.today)
 
+    def test_country_filter_counts_equal_unfiltered_minus_excluded(self) -> None:
+        records = self.records + [
+            {"Device ID": "E", "Serial number": "FIVE", "Country": ""},
+            {"Device ID": "F", "Serial number": "SIX", "Intune_Group_APAC_Devices - Copy.Country": "SG"},
+        ]
+        unfiltered = build_dashboard(records, today=self.today)
+        for country in ["SG", "MY", "(No country)"]:
+            filtered = build_dashboard(records, {"country": country}, today=self.today)
+            excluded = build_dashboard(records, today=self.today)
+            # compute excluded via indexes
+            selected_indexes = set(matching_record_indexes(records, {"country": country}, "totalAssets", self.today))
+            all_indexes = set(range(len(records)))
+            excluded_count = len(all_indexes - selected_indexes)
+            self.assertEqual(filtered["kpis"]["totalAssets"], unfiltered["kpis"]["totalAssets"] - excluded_count, msg=country)
+            self.assertEqual(filtered["sourceRecordCount"], unfiltered["sourceRecordCount"] - excluded_count, msg=country)
+
+
 
 class DashboardApiTests(unittest.TestCase):
     def setUp(self) -> None:
