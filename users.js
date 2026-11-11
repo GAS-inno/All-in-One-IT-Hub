@@ -251,6 +251,7 @@ App.registerModule('users', (() => {
         <label>Account Active<select name="accountActive"><option value="YES" selected>YES</option><option value="NO">NO</option></select></label>
         <label>Country<input name="country" placeholder="e.g. Singapore or SG" /></label>
         <label>Location<input name="location" placeholder="Office, site, or department" /></label>
+        <label>Staff Type<select name="staffType"><option value="">Auto-detect</option><option value="External Staff">External Staff</option><option value="Internal Staff">Internal Staff</option><option value="Unclassified">Unclassified</option></select></label>
       </form>`,
       onConfirm: async () => {
         const form = document.getElementById('userForm');
@@ -264,6 +265,11 @@ App.registerModule('users', (() => {
           Country: String(values.get('country') || '').trim(),
           Location: String(values.get('location') || '').trim()
         };
+        const staffTypeValue = String(values.get('staffType') || '');
+        if (staffTypeValue) {
+          record.staff_type = staffTypeValue === 'Unclassified' ? null : staffTypeValue;
+          record.staff_type_source = 'manual';
+        }
         const current = storedUsers();
         const duplicateIndex = current.findIndex((user) => record.Email
           ? normalize(user.Email) === normalize(record.Email)
@@ -838,17 +844,27 @@ App.registerModule('users', (() => {
           <label>Account Active<select name="accountActive"><option value="YES" ${first.accountActive === 'YES' ? 'selected' : ''}>YES</option><option value="NO" ${first.accountActive === 'NO' ? 'selected' : ''}>NO</option></select></label>
           <label>Country<input name="country" value="${escapeHtml(first.country || '')}" /></label>
           <label>Location<input name="location" value="${escapeHtml(first.location || '')}" /></label>
+          <label>Staff Type<select name="staffType">
+            <option value="">Auto-detect</option>
+            <option value="External Staff" ${first.staffTypeSource === 'manual' && first.staffType === 'External Staff' ? 'selected' : ''}>External Staff</option>
+            <option value="Internal Staff" ${first.staffTypeSource === 'manual' && first.staffType === 'Internal Staff' ? 'selected' : ''}>Internal Staff</option>
+            <option value="Unclassified" ${first.staffTypeSource === 'manual' && !first.staffType ? 'selected' : ''}>Unclassified</option>
+          </select></label>
         </form>`,
         onConfirm: async () => {
           const form = document.getElementById('userEditForm');
           if (!form.reportValidity()) return;
           const values = new FormData(form);
+          const staffTypeValue = String(values.get('staffType') || '');
+          const staffTypeSource = staffTypeValue ? 'manual' : 'auto';
           const updated = {
             Name: String(values.get('name') || '').trim(),
             Email: String(values.get('email') || '').trim(),
             'Account Active': String(values.get('accountActive') || 'YES').trim().toUpperCase(),
             Country: String(values.get('country') || '').trim(),
-            Location: String(values.get('location') || '').trim()
+            Location: String(values.get('location') || '').trim(),
+            staff_type: staffTypeValue ? (staffTypeValue === 'Unclassified' ? null : staffTypeValue) : null,
+            staff_type_source: staffTypeSource
           };
           const editTargets = toEdit.map((item) => ({
             id: item.id,
