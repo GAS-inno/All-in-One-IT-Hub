@@ -304,18 +304,20 @@ App.registerModule('users', (() => {
   function parseUserCsv(text) {
     const rows = App.modules.inventory?.parseCsvText?.(text);
     if (!rows || rows.length < 2) throw new Error('User CSV is empty or missing a header row.');
-    const headers = rows[0].map((header) => String(header || '').replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' '));
+    const headers = rows[0].map((header) => String(header || '').replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
     const nameKeyIndex = headers.findIndex((header) => ['name', 'full name', 'user name', 'staff name'].includes(header));
     const userIdIndex = headers.findIndex((header) => ['userid', 'user id'].includes(header));
+    const staffTypeIndex = headers.findIndex((header) => header === 'staff type');
     const indexes = {
       userId: userIdIndex,
       name: nameKeyIndex >= 0 ? nameKeyIndex : userIdIndex,
+      staffType: staffTypeIndex,
       email: headers.findIndex((header) => ['email', 'email address', 'staff email', 'user email'].includes(header)),
       accountActive: headers.findIndex((header) => ['account active', 'account status', 'active'].includes(header)),
       country: headers.findIndex((header) => header === 'country'),
       location: headers.findIndex((header) => ['location', 'office', 'site'].includes(header))
     };
-    if (indexes.name < 0) throw new Error('User CSV must include a Name, Full Name, User Name, or Staff Name column.');
+    if (indexes.name < 0) throw new Error('User CSV must include a NAME column (or Full Name/User Name/Staff Name).');
 
     const imported = rows.slice(1).map((row, rowIndex) => {
       const value = (index) => index < 0 ? '' : String(row[index] || '').trim();
@@ -325,13 +327,25 @@ App.registerModule('users', (() => {
       if (email && (!email.includes('@') || email.startsWith('@') || email.endsWith('@'))) {
         throw new Error(`User CSV row ${rowIndex + 2} has an invalid email address.`);
       }
+      const staffTypeRaw = value(indexes.staffType);
+      let staff_type = null;
+      let staff_type_source = 'auto';
+      if (staffTypeRaw) {
+        const normalized = staffTypeRaw.toLowerCase();
+        if (normalized === 'external staff') { staff_type = 'External Staff'; staff_type_source = 'manual'; }
+        else if (normalized === 'internal staff') { staff_type = 'Internal Staff'; staff_type_source = 'manual'; }
+        else if (normalized === 'unclassified') { staff_type = null; staff_type_source = 'manual'; }
+        else { staff_type = null; staff_type_source = 'auto'; }
+      }
       return {
         UserID: value(indexes.userId),
         Name: name,
         Email: email,
         'Account Active': accountActiveFromCsv(value(indexes.accountActive)),
         Country: value(indexes.country),
-        Location: value(indexes.location)
+        Location: value(indexes.location),
+        staff_type,
+        staff_type_source
       };
     });
     if (!imported.length) throw new Error('User CSV contains no user records.');
@@ -355,6 +369,7 @@ App.registerModule('users', (() => {
     const normalizedSet = new Set();
     const knownUserColumns = [
       'name', 'full name', 'user name', 'staff name', 'userid', 'user id',
+      'staff type',
       'email', 'email address', 'staff email', 'user email',
       'account active', 'account status', 'active',
       'country', 'location', 'office', 'site'
@@ -363,6 +378,11 @@ App.registerModule('users', (() => {
       const normalized = String(header || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
       if (!normalized) return;
       normalizedSet.add(normalized);
+      if (normalized === 'assigned assets') {
+        // Derived column; excluded from import by design.
+        if (!unrecognized.includes('assigned assets (derived/ignored)')) unrecognized.push('assigned assets (derived/ignored)');
+        return;
+      }
       if (knownUserColumns.includes(normalized)) {
         if (!recognized.includes(normalized)) recognized.push(normalized);
       } else if (!unrecognized.includes(normalized)) {
@@ -372,8 +392,8 @@ App.registerModule('users', (() => {
     const nameKeys = ['name', 'full name', 'user name', 'staff name', 'userid', 'user id'];
     const userIdKeys = ['userid', 'user id'];
     const missingRequired = [];
-    if (!nameKeys.some((key) => normalizedSet.has(key))) missingRequired.push('Name, Full Name, User Name, Staff Name, UserID, or User ID');
-    if (!userIdKeys.some((key) => normalizedSet.has(key))) missingRequired.push('User ID');
+    if (!nameKeys.some((key) => normalizedSet.has(key))) missingRequired.push('NAME (or Full Name/User Name/Staff Name)');
+    if (!userIdKeys.some((key) => normalizedSet.has(key))) missingRequired.push('USER ID');
     return { recognized, unrecognized, missingRequired };
   }
 
@@ -797,7 +817,8 @@ App.registerModule('users', (() => {
             Country: String(values.get('country') || '').trim(),
             Location: String(values.get('location') || '').trim(),
             staff_type: staffTypeValue ? (staffTypeValue === 'Unclassified' ? null : staffTypeValue) : null,
-            staff_type_source: staffTypeSource
+            staff_type_source: staffTypeSource,
+            recompute_staff_type: staffTypeSource === 'auto'
           };
           const editTargets = toEdit.map((item) => ({
             id: item.id,

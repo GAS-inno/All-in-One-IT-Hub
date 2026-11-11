@@ -26,10 +26,9 @@ App.registerModule('inventory', (() => {
     'Asset type', 'Fixed Asset Number', 'Device ID', 'Device name', 'deployment_status', 'condition', 'Country', 'Ownership', 'Compliance', 'OS', 'OS version', 'JoinType', 'Managed by',
     'Primary user email address', 'Primary user UPN', 'Last check-in', 'Enrollment date',
     'Model', 'Manufacturer', 'Serial number', 'Primary user display name',
-    'Free storage', 'Azure AD registered', 'Intune GroupName', 'Intune Group DeviceName',
-    'Intune SerialNumber', 'Intune Group Tag', 'Intune Group Model', 'Intune Group Manufacturer',
+    'Free storage', 'Azure AD registered', 'Intune GroupName', 'Intune Group Tag',
     'WindowsVersion', 'Total storage (GB)', 'Location', 'Device IP', 'Firmware version',
-    'UPS Capacity (VA)', 'Battery replacement date', 'Warranty Start Date', 'Warranty End Date', 'Warranty Match Status', 'Age', 'Device Online Status'
+    'UPS Capacity (VA)', 'Battery replacement date', 'Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date', 'Warranty Match Status', 'Age', 'Device Online Status'
   ];
   const CHECKOUT_COLUMNS = ['Expected Return Date'];
   const REPLACEMENT_COLUMNS = [
@@ -41,17 +40,16 @@ App.registerModule('inventory', (() => {
     'OS version', 'Azure AD registered', 'JoinType', 'Enrollment date', 'Managed by', 'Device IP',
     'Firmware version', 'UPS Capacity (VA)', 'Battery replacement date', 'Compliance',
     'Primary user email address', 'Intune GroupName', 'Intune Group Tag',
-    'Last check-in', 'Total storage (GB)', 'Warranty Start Date', 'Warranty End Date', 'Age',
+    'Last check-in', 'Total storage (GB)', 'Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date', 'Age',
     'Device Online Status', ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS
   ];
   const LAYOUT_COLUMNS = [
     'Asset type', 'Fixed Asset Number', 'Device ID', 'Device name', 'Deployment Status', 'Hardware Health', 'Country', 'Ownership', 'Compliance', 'OS', 'OS version',
     'Primary user email address', 'Primary user UPN', 'Last check-in', 'Enrollment date',
     'Model', 'Manufacturer', 'Serial number', 'Primary user display name',
-    'Free storage', 'Azure AD registered', 'JoinType', 'Managed by', 'Intune GroupName', 'Intune Group DeviceName',
-    'Intune SerialNumber', 'Intune Group Tag', 'Intune Group Model', 'Intune Group Manufacturer',
+    'Free storage', 'Azure AD registered', 'JoinType', 'Managed by', 'Intune GroupName', 'Intune Group Tag',
     'WindowsVersion', 'Total storage (GB)', 'Location', 'Device IP', 'Firmware version',
-    'UPS Capacity (VA)', 'Battery replacement date', 'Warranty Start Date', 'Warranty End Date', 'Age', 'Device Online Status',
+    'UPS Capacity (VA)', 'Battery replacement date', 'Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date', 'Age', 'Device Online Status',
     ...CHECKOUT_COLUMNS, ...REPLACEMENT_COLUMNS
   ];
 
@@ -314,11 +312,25 @@ App.registerModule('inventory', (() => {
 
   function getInventory() {
     const list = App.store.get(STORAGE_KEY);
-    return Array.isArray(list) ? list.map((device) => ({
-      ...device,
-      'Asset type': getAssetType(device),
-      Country: getDeviceCountryName(device)
-    })) : [];
+    return Array.isArray(list) ? list.map((device) => {
+      const normalized = { ...device };
+      if (normalized['Intune GroupName'] == null || normalized['Intune GroupName'] === '') {
+        normalized['Intune GroupName'] = String(normalized['IntuneGroup.GroupName'] || normalized['Intune.GroupName'] || normalized['IntuneGroup GroupName'] || normalized['Intune GroupName'] || '');
+      }
+      delete normalized['IntuneGroup.GroupName'];
+      delete normalized['IntuneGroup.DeviceName'];
+      delete normalized['IntuneGroup.SerialNumber'];
+      delete normalized['Intune SerialNumber'];
+      delete normalized['IntuneGroup.Model'];
+      delete normalized['Intune Group Model'];
+      delete normalized['IntuneGroup.Manufacturer'];
+      delete normalized['Intune Group Manufacturer'];
+      return {
+        ...normalized,
+        'Asset type': getAssetType(normalized),
+        Country: getDeviceCountryName(normalized)
+      };
+    }) : [];
   }
 
   function getWarrantyData() {
@@ -547,30 +559,95 @@ App.registerModule('inventory', (() => {
     return Number(value).toFixed(2);
   }
 
-  function parseDateValue(value) {
-    const text = String(value || '').trim();
-    if (!text) return null;
-    const displayDate = text.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+  const DATE_MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const DATE_MONTH_INDEX = Object.fromEntries(DATE_MONTHS_SHORT.map((m, i) => [m.toLowerCase(), i + 1]));
+
+  function isValidCalendarDate(year, month, day) {
+    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
+    if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+    const date = new Date(year, month - 1, day);
+    return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+  }
+
+  function formatIsoDate(year, month, day) {
+    return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  function formatDisplayDateFromIso(iso) {
+    const match = String(iso || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return '';
+    const month = DATE_MONTHS_SHORT[Number(match[2]) - 1];
+    if (!month) return '';
+    return `${match[3]}-${month}-${match[1]}`;
+  }
+
+  function excelSerialToIso(serialText) {
+    const text = String(serialText || '').trim();
+    if (!/^\d+(\.0+)?$/.test(text)) return null;
+    const serial = Number(text);
+    if (!Number.isFinite(serial) || serial <= 0 || serial > 2958465) return null;
+    // Excel 1900 date system with 1899-12-30 epoch (accounts for Excel 1900 leap-year bug)
+    const ms = Math.round((serial - 25569) * 86400000);
+    const date = new Date(ms);
+    if (Number.isNaN(date.getTime())) return null;
+    return formatIsoDate(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+  }
+
+  function normalizeDateInput(value, { allowAmbiguousSlash = false } = {}) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return { iso: '', error: '' };
+    if (/^0{1,2}-jan-1900$/i.test(raw)) return { iso: '', error: '' };
+
+    const displayDate = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
     if (displayDate) {
-      const month = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(displayDate[2].toLowerCase());
-      if (month >= 0) {
-        const date = new Date(Number(displayDate[3]), month, Number(displayDate[1]));
-        if (date.getFullYear() === Number(displayDate[3]) && date.getMonth() === month && date.getDate() === Number(displayDate[1])) return date;
-        return null;
-      }
+      const day = Number(displayDate[1]);
+      const month = DATE_MONTH_INDEX[displayDate[2].toLowerCase()];
+      const year = Number(displayDate[3]);
+      if (month && isValidCalendarDate(year, month, day)) return { iso: formatIsoDate(year, month, day), error: '' };
+      return { iso: '', error: `Invalid date "${raw}". Use DD-MMM-YYYY (e.g. 05-Dec-2021).` };
     }
-    const slashDate = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+
+    const isoDate = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoDate) {
+      const year = Number(isoDate[1]);
+      const month = Number(isoDate[2]);
+      const day = Number(isoDate[3]);
+      if (isValidCalendarDate(year, month, day)) return { iso: formatIsoDate(year, month, day), error: '' };
+      return { iso: '', error: `Invalid date "${raw}". Use YYYY-MM-DD or DD-MMM-YYYY.` };
+    }
+
+    const slashDate = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
     if (slashDate) {
       const first = Number(slashDate[1]);
       const second = Number(slashDate[2]);
-      const day = first > 12 || second <= 12 ? first : second;
-      const month = first > 12 || second <= 12 ? second : first;
-      const date = new Date(Number(slashDate[3]), month - 1, day);
-      if (date.getFullYear() === Number(slashDate[3]) && date.getMonth() === month - 1 && date.getDate() === day) return date;
-      return null;
+      const year = Number(slashDate[3]);
+      let day;
+      let month;
+      if (first > 12 && second <= 12) {
+        day = first; month = second;
+      } else if (second > 12 && first <= 12) {
+        day = second; month = first;
+      } else if (allowAmbiguousSlash) {
+        day = first; month = second;
+      } else {
+        return { iso: '', error: `Ambiguous date "${raw}". Use DD-MMM-YYYY or YYYY-MM-DD instead of guessing.` };
+      }
+      if (isValidCalendarDate(year, month, day)) return { iso: formatIsoDate(year, month, day), error: '' };
+      return { iso: '', error: `Invalid date "${raw}".` };
     }
-    const date = new Date(text);
-    return Number.isNaN(date.getTime()) ? null : date;
+
+    const excelIso = excelSerialToIso(raw);
+    if (excelIso) return { iso: excelIso, error: '' };
+
+    return { iso: '', error: `Unsupported date format "${raw}". Use DD-MMM-YYYY or YYYY-MM-DD.` };
+  }
+
+  function parseDateValue(value) {
+    const result = normalizeDateInput(value, { allowAmbiguousSlash: false });
+    if (!result.iso) return null;
+    const match = result.iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return null;
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
   }
 
   function getDaysSince(dateValue) {
@@ -599,27 +676,11 @@ App.registerModule('inventory', (() => {
   }
 
   function dateInputValue(value) {
-    const text = String(value ?? '').trim();
-    if (!text) return '';
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-    if (match) return `${String(Number(match[3])).padStart(2, '0')}-${months[Number(match[2]) - 1] || ''}-${match[1]}`;
-    const yearFirst = text.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
-    if (yearFirst) return `${String(Number(yearFirst[3])).padStart(2, '0')}-${months[Number(yearFirst[2]) - 1] || ''}-${yearFirst[1]}`;
-    const displayDate = text.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
-    if (displayDate) return `${String(Number(displayDate[1])).padStart(2, '0')}-${displayDate[2][0].toUpperCase()}${displayDate[2].slice(1).toLowerCase()}-${displayDate[3]}`;
-    const slashDate = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-    if (slashDate) {
-      const [, first, second, year] = slashDate;
-      const firstNumber = Number(first);
-      const secondNumber = Number(second);
-      const day = firstNumber > 12 || secondNumber <= 12 ? firstNumber : secondNumber;
-      const month = firstNumber > 12 || secondNumber <= 12 ? secondNumber : firstNumber;
-      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-        return `${String(day).padStart(2, '0')}-${months[month - 1]}-${year}`;
-      }
-    }
-    return text;
+    const result = normalizeDateInput(value, { allowAmbiguousSlash: false });
+    if (result.iso) return formatDisplayDateFromIso(result.iso);
+    // Legacy/unparseable values: show raw text for visibility but do not coerce to a date.
+    const raw = String(value ?? '').trim();
+    return /^0{1,2}-jan-1900$/i.test(raw) ? '' : raw;
   }
 
   function getStatusLabels() {
@@ -766,20 +827,18 @@ App.registerModule('inventory', (() => {
       'Primary user display name', 'Primary User Display Name'
     ]) || '';
     const groupName = ciGet([
-      'IntuneGroup.GroupName', 'IntuneGroup.Group Name', 'Intune GroupName', 'Intune Group GroupName',
+      'Intune GroupName', 'IntuneGroup.GroupName', 'IntuneGroup.Group Name', 'Intune Group GroupName',
       'Intune.GroupName', 'Group Name', 'Intune Group Name'
     ]) || '';
     const groupTag = ciGet([
-      'IntuneGroup.GroupTag', 'Group tag', 'Group Tag', 'GroupTag', 'Intune.Group Tag',
-      'Intune Group Tag', 'IntuneGroup GroupTag', 'GroupTag'
+      'Intune Group Tag', 'IntuneGroup.GroupTag', 'Group tag', 'Group Tag', 'GroupTag', 'Intune.Group Tag',
+      'IntuneGroup GroupTag', 'GroupTag'
     ]) || '';
     const model = ciGet([
-      'Model', 'Model Name', 'deviceModel', 'Intune Group Model', 'IntuneGroup.Model',
-      'Intune.Model', 'IntuneGroup Model', 'Device Model'
+      'Model', 'Model Name', 'deviceModel', 'Device Model'
     ]) || '';
     const manufacturer = ciGet([
-      'Manufacturer', 'Device Manufacturer', 'deviceManufacturer', 'Intune Group Manufacturer',
-      'IntuneGroup.Manufacturer', 'Intune.Manufacturer', 'IntuneGroup Manufacturer', 'Device Manufacturer Name'
+      'Manufacturer', 'Device Manufacturer', 'deviceManufacturer', 'Device Manufacturer Name'
     ]) || '';
     const location = ciGet([
       'Location', 'Office', 'Site', 'Office Location', 'Site Location', 'User Location', 'Staff Location'
@@ -796,8 +855,8 @@ App.registerModule('inventory', (() => {
       }
     }
 
-    const assetTypeInput = ciGet(['Asset type', 'Device type', 'Device Type']);
-    const deviceTypeInput = assetTypeInput || ciGet(['Device type', 'Device Type']) || record.Type || activeDeviceType;
+    const assetTypeInput = ciGet(['Category', 'Asset type', 'Device type', 'Device Type']);
+    const deviceTypeInput = assetTypeInput || ciGet(['Category', 'Device type', 'Device Type']) || record.Type || activeDeviceType;
     let assetType = activeDeviceType || 'laptop';
     if (deviceTypeInput) {
       try {
@@ -813,6 +872,12 @@ App.registerModule('inventory', (() => {
     const condition = ciGet([
       'Condition', 'condition'
     ]) || '';
+
+    const normalizeImportDate = (label, rawValue) => {
+      const normalized = normalizeDateInput(rawValue, { allowAmbiguousSlash: false });
+      if (normalized.error) throw new Error(`${label}: ${normalized.error}`);
+      return normalized.iso;
+    };
 
     const coerced = {
       ...record,
@@ -831,8 +896,10 @@ App.registerModule('inventory', (() => {
       'Manufacturer': manufacturer,
       'Location': location,
       'Total storage (GB)': storageGb === null ? '' : Number(storageGb.toFixed(2)),
-      'Warranty End Date': ciGet(['Warranty End Date', 'Warranty end date']) || '',
-      'Warranty Start Date': ciGet(['Warranty Start Date', 'Warranty start date']) || '',
+      'Purchase Date': normalizeImportDate('Purchase Date', ciGet(['Purchase Date', 'Purchase date', 'purchase_date']) || ''),
+      'Warranty Start Date': normalizeImportDate('Warranty Start Date', ciGet(['Warranty Start Date', 'Warranty start date']) || ''),
+      'Warranty End Date': normalizeImportDate('Warranty End Date', ciGet(['Warranty End Date', 'Warranty end date']) || ''),
+      'Disposal Date': normalizeImportDate('Disposal Date', ciGet(['Disposal Date', 'Disposal date', 'disposal_date']) || ''),
       'Warranty Match Status': ciGet(['Warranty Match Status']) || '',
       'Duplicate Serial': record['Duplicate Serial'] === true,
       'Last check-in': ciGet(['Last check-in', 'Last Check-In', 'Last checkin']) || '',
@@ -841,9 +908,17 @@ App.registerModule('inventory', (() => {
       'Azure AD registered': ciGet(['Azure AD registered', 'Azure AD Registered']) || '',
       JoinType: ciGet(['JoinType', 'Join Type', 'Join type']) || '',
       'Managed by': ciGet(['Managed by', 'Managed By']) || '',
-      'Device IP': ciGet(['Device IP', 'Management IP', 'Device IP Address']) || '',
-      'IntuneGroup.SerialNumber': ciGet(['IntuneGroup.SerialNumber', 'Intune.SerialNumber']) || serialFromRaw
+      'Device IP': ciGet(['Device IP', 'Management IP', 'Device IP Address']) || ''
     };
+    // Remove retired Intune fields and legacy key variants from stored record.
+    delete coerced['IntuneGroup.GroupName'];
+    delete coerced['IntuneGroup.DeviceName'];
+    delete coerced['IntuneGroup.SerialNumber'];
+    delete coerced['Intune SerialNumber'];
+    delete coerced['IntuneGroup.Model'];
+    delete coerced['Intune Group Model'];
+    delete coerced['IntuneGroup.Manufacturer'];
+    delete coerced['Intune Group Manufacturer'];
     Object.defineProperty(coerced, IMPORT_SOURCE_VALUES, {
       value: new Map(Object.entries(rawRow).map(([key, value]) => [normalizeHeader(key), value == null ? '' : String(value).trim()])),
       enumerable: false
@@ -896,13 +971,38 @@ App.registerModule('inventory', (() => {
     return rows.filter((row) => row.some((cell) => String(cell).trim() !== ''));
   }
 
+  const REMOVED_INVENTORY_IMPORT_HEADERS = new Set([
+    'intune group device name', 'intunegroup devicename', 'intune serialnumber', 'intunegroup serialnumber',
+    'intune group model', 'intunegroup model', 'intune group manufacturer', 'intunegroup manufacturer'
+  ]);
+
+  function getInventoryImportableHeaders() {
+    // Same source of truth as template generation, plus legacy/accepted aliases.
+    const templateHeaders = INVENTORY_TEMPLATE_COLUMNS.map((column) => column.header);
+    const legacyAliases = [
+      'Asset type', 'Device type', 'Device Type', 'OS version', 'Group Name', 'IntuneGroup.GroupName',
+      'IntuneGroup.GroupTag', 'Group Tag', 'GroupTag', 'Warranty Start date', 'Warranty start date',
+      'Warranty End date', 'Warranty end date', 'Primary User UPN', 'User Principal Name', 'Total storage',
+      'Enrollment Date', 'Last Check-In'
+    ];
+    return [...templateHeaders, ...legacyAliases, ...LAYOUT_COLUMNS, ...DEFAULT_COLUMNS];
+  }
+
   function validateInventoryImportColumns(headerRow) {
-    const normalizedHeaders = headerRow.map((header) => normalizeImportHeader(header));
-    const databaseColumns = new Set([...LAYOUT_COLUMNS, ...DEFAULT_COLUMNS, 'Primary user UPN', 'LOB', 'Ownership', 'Compliance', 'OS', 'Group Name', 'IntuneGroup.GroupName', 'Total storage', 'Total storage (GB)'].map(normalizeHeader));
+    const normalizedHeaders = headerRow.map((header) => normalizeHeader(header));
+    const databaseColumns = new Set(getInventoryImportableHeaders().map(normalizeHeader));
     const recognized = [];
     const unrecognized = [];
-    normalizedHeaders.forEach((header) => {
-      if (databaseColumns.has(header) && !['device online status', 'age'].includes(header)) recognized.push(header);
+    normalizedHeaders.forEach((header, index) => {
+      if (['device online status', 'age', 'actions', 'assigned assets'].includes(header)) {
+        unrecognized.push(header);
+        return;
+      }
+      if (REMOVED_INVENTORY_IMPORT_HEADERS.has(header)) {
+        unrecognized.push(`${normalizeHeader(headerRow[index])} (removed/ignored)`);
+        return;
+      }
+      if (databaseColumns.has(header) || header === 'category') recognized.push(header);
       else unrecognized.push(header);
     });
     const missingRequired = ['device name', 'serial number'].filter((key) => !normalizedHeaders.includes(key));
@@ -916,7 +1016,9 @@ App.registerModule('inventory', (() => {
       'intune group groupname': 'intunegroup groupname',
       'intune group tag': 'intunegroup grouptag',
       'group tag': 'intunegroup grouptag',
-      'primary user upn': 'primary user upn'
+      'primary user upn': 'primary user upn',
+      'category': 'asset type',
+      'os version': 'os version'
     };
     return aliases[normalized] || normalized;
   }
@@ -1087,10 +1189,14 @@ App.registerModule('inventory', (() => {
       }
       seen.add(serialKey);
 
+      const ws = normalizeDateInput(startDate, { allowAmbiguousSlash: false });
+      if (ws.error) throw new Error(`Warranty Start Date: ${ws.error}`);
+      const we = normalizeDateInput(endDate, { allowAmbiguousSlash: false });
+      if (we.error) throw new Error(`Warranty End Date: ${we.error}`);
       records.push({
         'Serial number': serialTrimmed,
-        'Warranty Start Date': String(startDate || '').trim(),
-        'Warranty End Date': String(endDate || '').trim()
+        'Warranty Start Date': ws.iso,
+        'Warranty End Date': we.iso
       });
     }
 
@@ -1100,16 +1206,16 @@ App.registerModule('inventory', (() => {
 
   function createSampleInventory() {
     return [
-      { 'Device ID': 'INT-1001', 'Device name': 'LAP-SG-001', Ownership: 'Corporate', Compliance: 'Compliant', OS: 'Windows 11', 'OS version': '23H2', 'Primary user email address': 'alex.ng@contoso.com', 'Primary user UPN': 'alex.ng@contoso.com', 'Last check-in': '2025-09-20', 'Enrollment date': '2024-01-15', Model: 'Latitude 5440', Manufacturer: 'Dell', 'Serial number': 'SG-1001', 'Primary user display name': 'Alex Ng', 'Total storage': '512000000000', 'Free storage': '82000000000', 'Azure AD registered': 'Yes', 'IntuneGroup.GroupName': 'Intune-SG', 'IntuneGroup.DeviceName': 'LAP-SG-001', 'IntuneGroup.SerialNumber': 'SG-1001', 'IntuneGroup.GroupTag': 'SG', 'IntuneGroup.Model': 'Latitude 5440', 'IntuneGroup.Manufacturer': 'Dell', WindowsVersion: 'Windows 11', 'Total storage (GB)': 476.84, 'Warranty End Date': '2026-08-21', 'Warranty Start Date': '2024-08-21' },
-      { 'Device ID': 'INT-1002', 'Device name': 'LAP-SG-002', Ownership: 'Corporate', Compliance: 'Non-Compliant', OS: 'Windows 11', 'OS version': '22H2', 'Primary user email address': 'lamia@contoso.com', 'Primary user UPN': 'lamia@contoso.com', 'Last check-in': '2025-09-18', 'Enrollment date': '2023-12-11', Model: 'EliteBook 840', Manufacturer: 'HP', 'Serial number': 'SG-1002', 'Primary user display name': 'Lamia Ali', 'Total storage': '512000000000', 'Free storage': '120000000000', 'Azure AD registered': 'Yes', 'IntuneGroup.GroupName': 'Intune-SG', 'IntuneGroup.DeviceName': 'LAP-SG-002', 'IntuneGroup.SerialNumber': 'SG-1002', 'IntuneGroup.GroupTag': 'SG', 'IntuneGroup.Model': 'EliteBook 840', 'IntuneGroup.Manufacturer': 'HP', WindowsVersion: 'Windows 11', 'Total storage (GB)': 476.84, 'Warranty End Date': '2025-10-11', 'Warranty Start Date': '2023-10-11' },
-      { 'Device ID': 'INT-1003', 'Device name': 'LAP-MY-001', Ownership: 'BYOD', Compliance: 'Compliant', OS: 'Windows 10', 'OS version': '22H2', 'Primary user email address': 'tina.wong@contoso.com', 'Primary user UPN': 'tina.wong@contoso.com', 'Last check-in': '2025-09-15', 'Enrollment date': '2024-02-10', Model: 'ThinkPad X1 Carbon', Manufacturer: 'Lenovo', 'Serial number': 'MY-1003', 'Primary user display name': 'Tina Wong', 'Total storage': '512000000000', 'Free storage': '300000000000', 'Azure AD registered': 'Yes', 'IntuneGroup.GroupName': 'Intune-MY', 'IntuneGroup.DeviceName': 'LAP-MY-001', 'IntuneGroup.SerialNumber': 'MY-1003', 'IntuneGroup.GroupTag': 'MY', 'IntuneGroup.Model': 'ThinkPad X1 Carbon', 'IntuneGroup.Manufacturer': 'Lenovo', WindowsVersion: 'Windows 10', 'Total storage (GB)': 476.84, 'Warranty End Date': '2027-02-18', 'Warranty Start Date': '2024-02-18' },
-      { 'Device ID': 'INT-1004', 'Device name': 'LAP-TH-001', Ownership: 'Corporate', Compliance: 'Compliant', OS: 'Windows 11', 'OS version': '24H2', 'Primary user email address': 'nattapong.s@contoso.com', 'Primary user UPN': 'nattapong.s@contoso.com', 'Last check-in': '2025-09-07', 'Enrollment date': '2024-03-05', Model: 'XPS 13', Manufacturer: 'Dell', 'Serial number': 'TH-1004', 'Primary user display name': 'Nattapong S.', 'Total storage': '256000000000', 'Free storage': '168000000000', 'Azure AD registered': 'No', 'IntuneGroup.GroupName': 'Intune-TH', 'IntuneGroup.DeviceName': 'LAP-TH-001', 'IntuneGroup.SerialNumber': 'TH-1004', 'IntuneGroup.GroupTag': 'TH', 'IntuneGroup.Model': 'XPS 13', 'IntuneGroup.Manufacturer': 'Dell', WindowsVersion: 'Windows 11', 'Total storage (GB)': 238.42, 'Warranty End Date': '2025-11-29', 'Warranty Start Date': '2023-11-29' },
-      { 'Device ID': 'INT-1005', 'Device name': 'LAP-PH-001', Ownership: 'Corporate', Compliance: 'Unknown', OS: 'Windows 10', 'OS version': '21H2', 'Primary user email address': 'enrico.delacruz@contoso.com', 'Primary user UPN': 'enrico.delacruz@contoso.com', 'Last check-in': '2025-09-16', 'Enrollment date': '2023-09-12', Model: 'Latitude 5530', Manufacturer: 'Dell', 'Serial number': 'PH-1005', 'Primary user display name': 'Enrico Dela Cruz', 'Total storage': '512000000000', 'Free storage': '210000000000', 'Azure AD registered': 'Yes', 'IntuneGroup.GroupName': 'Intune-PH', 'IntuneGroup.DeviceName': 'LAP-PH-001', 'IntuneGroup.SerialNumber': 'PH-1005', 'IntuneGroup.GroupTag': 'PH', 'IntuneGroup.Model': 'Latitude 5530', 'IntuneGroup.Manufacturer': 'Dell', WindowsVersion: 'Windows 10', 'Total storage (GB)': 476.84, 'Warranty End Date': '2026-01-17', 'Warranty Start Date': '2024-01-17' },
-      { 'Device ID': 'INT-1006', 'Device name': 'LAP-SG-003', Ownership: 'Corporate', Compliance: 'Compliant', OS: 'macOS', 'OS version': '14.7', 'Primary user email address': 'karen.li@contoso.com', 'Primary user UPN': 'karen.li@contoso.com', 'Last check-in': '2025-09-21', 'Enrollment date': '2024-04-02', Model: 'MacBook Pro 14', Manufacturer: 'Apple', 'Serial number': 'SG-1006', 'Primary user display name': 'Karen Li', 'Total storage': '1000000000000', 'Free storage': '460000000000', 'Azure AD registered': 'Yes', 'IntuneGroup.GroupName': 'Intune-SG', 'IntuneGroup.DeviceName': 'LAP-SG-003', 'IntuneGroup.SerialNumber': 'SG-1006', 'IntuneGroup.GroupTag': 'SG', 'IntuneGroup.Model': 'MacBook Pro 14', 'IntuneGroup.Manufacturer': 'Apple', WindowsVersion: 'macOS', 'Total storage (GB)': 931.32, 'Warranty End Date': '2026-03-27', 'Warranty Start Date': '2024-03-27' },
-      { 'Device ID': 'INT-1007', 'Device name': 'LAP-MY-002', Ownership: 'Employee Owned', Compliance: 'Compliant', OS: 'Windows 11', 'OS version': '23H2', 'Primary user email address': 'adrian.tan@contoso.com', 'Primary user UPN': 'adrian.tan@contoso.com', 'Last check-in': '2025-09-03', 'Enrollment date': '2023-07-09', Model: 'Surface Laptop 5', Manufacturer: 'Microsoft', 'Serial number': 'MY-1007', 'Primary user display name': 'Adrian Tan', 'Total storage': '512000000000', 'Free storage': '390000000000', 'Azure AD registered': 'Yes', 'IntuneGroup.GroupName': 'Intune-MY', 'IntuneGroup.DeviceName': 'LAP-MY-002', 'IntuneGroup.SerialNumber': 'MY-1007', 'IntuneGroup.GroupTag': 'MY', 'IntuneGroup.Model': 'Surface Laptop 5', 'IntuneGroup.Manufacturer': 'Microsoft', WindowsVersion: 'Windows 11', 'Total storage (GB)': 476.84, 'Warranty End Date': '2026-10-07', 'Warranty Start Date': '2024-10-07' },
-      { 'Device ID': 'INT-1008', 'Device name': 'LAP-TH-002', Ownership: 'Corporate', Compliance: 'Compliant', OS: 'Windows 11', 'OS version': '23H2', 'Primary user email address': 'saran.chai@contoso.com', 'Primary user UPN': 'saran.chai@contoso.com', 'Last check-in': '2025-09-11', 'Enrollment date': '2024-08-15', Model: 'ThinkPad T14', Manufacturer: 'Lenovo', 'Serial number': 'TH-1008', 'Primary user display name': 'Saran Chai', 'Total storage': '512000000000', 'Free storage': '240000000000', 'Azure AD registered': 'Yes', 'IntuneGroup.GroupName': 'Intune-TH', 'IntuneGroup.DeviceName': 'LAP-TH-002', 'IntuneGroup.SerialNumber': 'TH-1008', 'IntuneGroup.GroupTag': 'TH', 'IntuneGroup.Model': 'ThinkPad T14', 'IntuneGroup.Manufacturer': 'Lenovo', WindowsVersion: 'Windows 11', 'Total storage (GB)': 476.84, 'Warranty End Date': '2028-04-12', 'Warranty Start Date': '2025-04-12' },
-      { 'Device ID': 'INT-1009', 'Device name': 'LAP-PH-002', Ownership: 'Corporate', Compliance: 'Non-Compliant', OS: 'Windows 11', 'OS version': '24H2', 'Primary user email address': 'norah.fernandez@contoso.com', 'Primary user UPN': 'norah.fernandez@contoso.com', 'Last check-in': '2025-09-12', 'Enrollment date': '2024-11-18', Model: 'EliteBook 865', Manufacturer: 'HP', 'Serial number': 'PH-1009', 'Primary user display name': 'Norah Fernandez', 'Total storage': '512000000000', 'Free storage': '170000000000', 'Azure AD registered': 'Yes', 'IntuneGroup.GroupName': 'Intune-PH', 'IntuneGroup.DeviceName': 'LAP-PH-002', 'IntuneGroup.SerialNumber': 'PH-1009', 'IntuneGroup.GroupTag': 'PH', 'IntuneGroup.Model': 'EliteBook 865', 'IntuneGroup.Manufacturer': 'HP', WindowsVersion: 'Windows 11', 'Total storage (GB)': 476.84, 'Warranty End Date': '2026-06-05', 'Warranty Start Date': '2024-06-05' },
-      { 'Device ID': 'INT-1010', 'Device name': 'LAP-SG-004', Ownership: 'Corporate', Compliance: 'Compliant', OS: 'Windows 11', 'OS version': '23H2', 'Primary user email address': 'mokhtar.ismail@contoso.com', 'Primary user UPN': 'mokhtar.ismail@contoso.com', 'Last check-in': '2025-09-02', 'Enrollment date': '2023-02-24', Model: 'ZenBook 14', Manufacturer: 'ASUS', 'Serial number': 'SG-1010', 'Primary user display name': 'Mokhtar Ismail', 'Total storage': '1000000000000', 'Free storage': '550000000000', 'Azure AD registered': 'Yes', 'IntuneGroup.GroupName': 'Intune-SG', 'IntuneGroup.DeviceName': 'LAP-SG-004', 'IntuneGroup.SerialNumber': 'SG-1010', 'IntuneGroup.GroupTag': 'SG', 'IntuneGroup.Model': 'ZenBook 14', 'IntuneGroup.Manufacturer': 'ASUS', WindowsVersion: 'Windows 11', 'Total storage (GB)': 931.32, 'Warranty End Date': '2025-12-22', 'Warranty Start Date': '2023-12-22' }
+      { 'Device ID': 'INT-1001', 'Device name': 'LAP-SG-001', Ownership: 'Corporate', Compliance: 'Compliant', OS: 'Windows 11', 'OS version': '23H2', 'Primary user email address': 'alex.ng@contoso.com', 'Primary user UPN': 'alex.ng@contoso.com', 'Last check-in': '2025-09-20', 'Enrollment date': '2024-01-15', Model: 'Latitude 5440', Manufacturer: 'Dell', 'Serial number': 'SG-1001', 'Primary user display name': 'Alex Ng', 'Total storage': '512000000000', 'Free storage': '82000000000', 'Azure AD registered': 'Yes', 'Intune GroupName': 'Intune-SG', 'Intune Group Tag': 'SG', WindowsVersion: 'Windows 11', 'Total storage (GB)': 476.84, 'Warranty End Date': '2026-08-21', 'Warranty Start Date': '2024-08-21' },
+      { 'Device ID': 'INT-1002', 'Device name': 'LAP-SG-002', Ownership: 'Corporate', Compliance: 'Non-Compliant', OS: 'Windows 11', 'OS version': '22H2', 'Primary user email address': 'lamia@contoso.com', 'Primary user UPN': 'lamia@contoso.com', 'Last check-in': '2025-09-18', 'Enrollment date': '2023-12-11', Model: 'EliteBook 840', Manufacturer: 'HP', 'Serial number': 'SG-1002', 'Primary user display name': 'Lamia Ali', 'Total storage': '512000000000', 'Free storage': '120000000000', 'Azure AD registered': 'Yes', 'Intune GroupName': 'Intune-SG', 'Intune Group Tag': 'SG', WindowsVersion: 'Windows 11', 'Total storage (GB)': 476.84, 'Warranty End Date': '2025-10-11', 'Warranty Start Date': '2023-10-11' },
+      { 'Device ID': 'INT-1003', 'Device name': 'LAP-MY-001', Ownership: 'BYOD', Compliance: 'Compliant', OS: 'Windows 10', 'OS version': '22H2', 'Primary user email address': 'tina.wong@contoso.com', 'Primary user UPN': 'tina.wong@contoso.com', 'Last check-in': '2025-09-15', 'Enrollment date': '2024-02-10', Model: 'ThinkPad X1 Carbon', Manufacturer: 'Lenovo', 'Serial number': 'MY-1003', 'Primary user display name': 'Tina Wong', 'Total storage': '512000000000', 'Free storage': '300000000000', 'Azure AD registered': 'Yes', 'Intune GroupName': 'Intune-MY', 'Intune Group Tag': 'MY', WindowsVersion: 'Windows 10', 'Total storage (GB)': 476.84, 'Warranty End Date': '2027-02-18', 'Warranty Start Date': '2024-02-18' },
+      { 'Device ID': 'INT-1004', 'Device name': 'LAP-TH-001', Ownership: 'Corporate', Compliance: 'Compliant', OS: 'Windows 11', 'OS version': '24H2', 'Primary user email address': 'nattapong.s@contoso.com', 'Primary user UPN': 'nattapong.s@contoso.com', 'Last check-in': '2025-09-07', 'Enrollment date': '2024-03-05', Model: 'XPS 13', Manufacturer: 'Dell', 'Serial number': 'TH-1004', 'Primary user display name': 'Nattapong S.', 'Total storage': '256000000000', 'Free storage': '168000000000', 'Azure AD registered': 'No', 'Intune GroupName': 'Intune-TH', 'Intune Group Tag': 'TH', WindowsVersion: 'Windows 11', 'Total storage (GB)': 238.42, 'Warranty End Date': '2025-11-29', 'Warranty Start Date': '2023-11-29' },
+      { 'Device ID': 'INT-1005', 'Device name': 'LAP-PH-001', Ownership: 'Corporate', Compliance: 'Unknown', OS: 'Windows 10', 'OS version': '21H2', 'Primary user email address': 'enrico.delacruz@contoso.com', 'Primary user UPN': 'enrico.delacruz@contoso.com', 'Last check-in': '2025-09-16', 'Enrollment date': '2023-09-12', Model: 'Latitude 5530', Manufacturer: 'Dell', 'Serial number': 'PH-1005', 'Primary user display name': 'Enrico Dela Cruz', 'Total storage': '512000000000', 'Free storage': '210000000000', 'Azure AD registered': 'Yes', 'Intune GroupName': 'Intune-PH', 'Intune Group Tag': 'PH', WindowsVersion: 'Windows 10', 'Total storage (GB)': 476.84, 'Warranty End Date': '2026-01-17', 'Warranty Start Date': '2024-01-17' },
+      { 'Device ID': 'INT-1006', 'Device name': 'LAP-SG-003', Ownership: 'Corporate', Compliance: 'Compliant', OS: 'macOS', 'OS version': '14.7', 'Primary user email address': 'karen.li@contoso.com', 'Primary user UPN': 'karen.li@contoso.com', 'Last check-in': '2025-09-21', 'Enrollment date': '2024-04-02', Model: 'MacBook Pro 14', Manufacturer: 'Apple', 'Serial number': 'SG-1006', 'Primary user display name': 'Karen Li', 'Total storage': '1000000000000', 'Free storage': '460000000000', 'Azure AD registered': 'Yes', 'Intune GroupName': 'Intune-SG', 'Intune Group Tag': 'SG', WindowsVersion: 'macOS', 'Total storage (GB)': 931.32, 'Warranty End Date': '2026-03-27', 'Warranty Start Date': '2024-03-27' },
+      { 'Device ID': 'INT-1007', 'Device name': 'LAP-MY-002', Ownership: 'Employee Owned', Compliance: 'Compliant', OS: 'Windows 11', 'OS version': '23H2', 'Primary user email address': 'adrian.tan@contoso.com', 'Primary user UPN': 'adrian.tan@contoso.com', 'Last check-in': '2025-09-03', 'Enrollment date': '2023-07-09', Model: 'Surface Laptop 5', Manufacturer: 'Microsoft', 'Serial number': 'MY-1007', 'Primary user display name': 'Adrian Tan', 'Total storage': '512000000000', 'Free storage': '390000000000', 'Azure AD registered': 'Yes', 'Intune GroupName': 'Intune-MY', 'Intune Group Tag': 'MY', WindowsVersion: 'Windows 11', 'Total storage (GB)': 476.84, 'Warranty End Date': '2026-10-07', 'Warranty Start Date': '2024-10-07' },
+      { 'Device ID': 'INT-1008', 'Device name': 'LAP-TH-002', Ownership: 'Corporate', Compliance: 'Compliant', OS: 'Windows 11', 'OS version': '23H2', 'Primary user email address': 'saran.chai@contoso.com', 'Primary user UPN': 'saran.chai@contoso.com', 'Last check-in': '2025-09-11', 'Enrollment date': '2024-08-15', Model: 'ThinkPad T14', Manufacturer: 'Lenovo', 'Serial number': 'TH-1008', 'Primary user display name': 'Saran Chai', 'Total storage': '512000000000', 'Free storage': '240000000000', 'Azure AD registered': 'Yes', 'Intune GroupName': 'Intune-TH', 'Intune Group Tag': 'TH', WindowsVersion: 'Windows 11', 'Total storage (GB)': 476.84, 'Warranty End Date': '2028-04-12', 'Warranty Start Date': '2025-04-12' },
+      { 'Device ID': 'INT-1009', 'Device name': 'LAP-PH-002', Ownership: 'Corporate', Compliance: 'Non-Compliant', OS: 'Windows 11', 'OS version': '24H2', 'Primary user email address': 'norah.fernandez@contoso.com', 'Primary user UPN': 'norah.fernandez@contoso.com', 'Last check-in': '2025-09-12', 'Enrollment date': '2024-11-18', Model: 'EliteBook 865', Manufacturer: 'HP', 'Serial number': 'PH-1009', 'Primary user display name': 'Norah Fernandez', 'Total storage': '512000000000', 'Free storage': '170000000000', 'Azure AD registered': 'Yes', 'Intune GroupName': 'Intune-PH', 'Intune Group Tag': 'PH', WindowsVersion: 'Windows 11', 'Total storage (GB)': 476.84, 'Warranty End Date': '2026-06-05', 'Warranty Start Date': '2024-06-05' },
+      { 'Device ID': 'INT-1010', 'Device name': 'LAP-SG-004', Ownership: 'Corporate', Compliance: 'Compliant', OS: 'Windows 11', 'OS version': '23H2', 'Primary user email address': 'mokhtar.ismail@contoso.com', 'Primary user UPN': 'mokhtar.ismail@contoso.com', 'Last check-in': '2025-09-02', 'Enrollment date': '2023-02-24', Model: 'ZenBook 14', Manufacturer: 'ASUS', 'Serial number': 'SG-1010', 'Primary user display name': 'Mokhtar Ismail', 'Total storage': '1000000000000', 'Free storage': '550000000000', 'Azure AD registered': 'Yes', 'Intune GroupName': 'Intune-SG', 'Intune Group Tag': 'SG', WindowsVersion: 'Windows 11', 'Total storage (GB)': 931.32, 'Warranty End Date': '2025-12-22', 'Warranty Start Date': '2023-12-22' }
     ];
   }
 
@@ -1126,8 +1232,10 @@ App.registerModule('inventory', (() => {
       'Deployment Status',
       'Hardware Health',
       ...rows.flatMap((device) => Object.keys(device)),
-      'Warranty End Date',
+      'Purchase Date',
       'Warranty Start Date',
+      'Warranty End Date',
+      'Disposal Date',
       'Warranty Match Status'
     ]));
     const columns = (includeAllColumns ? allColumns : getVisibleColumns())
@@ -1146,7 +1254,9 @@ App.registerModule('inventory', (() => {
         ? getWarrantyAge(getInventoryField(device, 'Warranty Start Date'), getInventoryField(device, 'Warranty End Date'))
         : column === 'Device Online Status'
           ? getDeviceOnlineStatus(device)
-          : getInventoryField(device, column))).join(','))
+          : ['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date'].includes(column)
+            ? (dateInputValue(getInventoryField(device, column)) || '')
+            : getInventoryField(device, column))).join(','))
     );
 
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
@@ -1188,37 +1298,98 @@ App.registerModule('inventory', (() => {
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
+  // Single source of truth for importable CSV/template columns (programmatic; not hand-maintained per download).
+  const INVENTORY_TEMPLATE_COLUMNS = [
+    { header: 'Category', example: 'laptop' },
+    { header: 'Fixed Asset Number', example: 'FA-000123' },
+    { header: 'Device ID', example: 'INT-1001' },
+    { header: 'Device name', example: 'LAP-SG-001' },
+    { header: 'Serial number', example: 'SG-1001' },
+    { header: 'Deployment Status', example: 'In Use' },
+    { header: 'Condition', example: 'Good' },
+    { header: 'Country', example: 'Singapore' },
+    { header: 'Ownership', example: 'Corporate' },
+    { header: 'Compliance', example: 'Compliant' },
+    { header: 'OS', example: 'Windows 11' },
+    { header: 'OS Version', example: '23H2' },
+    { header: 'JoinType', example: 'Azure AD joined' },
+    { header: 'Managed by', example: 'MDM' },
+    { header: 'Primary user email address', example: 'alex.ng@contoso.com' },
+    { header: 'Primary user UPN', example: 'alex.ng@contoso.com' },
+    { header: 'Primary user display name', example: 'Alex Ng' },
+    { header: 'Enrollment date', example: '15-Jan-2024' },
+    { header: 'Last check-in', example: '01-Nov-2026' },
+    { header: 'Model', example: 'Latitude 5440' },
+    { header: 'Manufacturer', example: 'Dell' },
+    { header: 'Intune GroupName', example: 'SG-Laptops' },
+    { header: 'Intune Group Tag', example: 'SG' },
+    { header: 'Total storage (GB)', example: '512' },
+    { header: 'Free storage', example: '123456789012' },
+    { header: 'Location', example: 'Singapore' },
+    { header: 'Device IP', example: '10.10.20.31' },
+    { header: 'Firmware version', example: '1.12.0' },
+    { header: 'UPS Capacity (VA)', example: '' },
+    { header: 'Battery replacement date', example: '' },
+    { header: 'Purchase Date', example: '05-Dec-2021' },
+    { header: 'Warranty Start Date', example: '15-Jan-2024' },
+    { header: 'Warranty End Date', example: '14-Jan-2027' },
+    { header: 'Disposal Date', example: '' },
+    { header: 'Azure AD registered', example: 'YES' }
+  ];
+  const INVENTORY_TEMPLATE_EXCLUDED = [
+    { column: 'Age', reason: 'Computed from Warranty Start Date to today (display-only).' },
+    { column: 'Last check-in', reason: 'Included as importable data when available, but treated as device-reported time; not system-generated by this template.' },
+    { column: 'Device Online Status', reason: 'Derived/displayed status; managed by the system/UI.' },
+    { column: 'Compliance', reason: 'Synced/reported status in managed environments; included for import but often system-managed.' },
+    { column: 'ACTIONS', reason: 'UI-only controls, not a data column.' },
+    { column: 'Warranty Match Status', reason: 'Computed/system-managed during warranty matching.' },
+    { column: 'Duplicate Serial', reason: 'System-managed import/comparison flag.' },
+    { column: 'deployment_status', reason: 'Internal storage field; use "Deployment Status" header instead.' },
+    { column: 'condition', reason: 'Internal storage field; use "Condition" header instead.' },
+    { column: 'Internal IDs/positions', reason: 'Auto/system-managed database identifiers are not import columns.' }
+  ];
+  // Computed/system-managed columns excluded from Asset Inventory template:
+  // - Age: computed from Warranty Start Date to today.
+  // - Device Online Status: derived from Last check-in / manual override display logic.
+  // - Warranty Match Status: system-managed by warranty matching.
+  // - Duplicate Serial: system-managed flag.
+  // - ACTIONS: UI-only.
+  // - Internal DB identifiers/positions: auto-managed.
+  const USER_TEMPLATE_COLUMNS = [
+    { header: 'USER ID', example: 'USR-0001' },
+    { header: 'NAME', example: 'Alex User' },
+    { header: 'STAFF TYPE', example: 'Internal Staff' },
+    { header: 'EMAIL', example: 'alex.user@example.com' },
+    { header: 'ACCOUNT ACTIVE', example: 'YES' },
+    { header: 'COUNTRY', example: 'Singapore' },
+    { header: 'LOCATION', example: 'Singapore HQ' }
+  ];
+  // Computed/system-managed columns excluded from User DB template:
+  // - ASSIGNED ASSETS: derived from inventory/checkouts.
+  // - Auto primary keys/internal record IDs: system-managed (USER ID may be supplied; if omitted system handling applies).
+
+  function buildInventoryTemplateDefinition() {
+    return {
+      id: 'inventory',
+      label: 'Inventory template',
+      filename: 'nexit-csv-template-inventory.csv',
+      headerRow: INVENTORY_TEMPLATE_COLUMNS.map((column) => column.header),
+      sampleRow: INVENTORY_TEMPLATE_COLUMNS.map((column) => column.example)
+    };
+  }
+
+  function buildUserTemplateDefinition() {
+    return {
+      id: 'users',
+      label: 'User list template',
+      filename: 'nexit-csv-template-users.csv',
+      headerRow: USER_TEMPLATE_COLUMNS.map((column) => column.header),
+      sampleRow: USER_TEMPLATE_COLUMNS.map((column) => column.example)
+    };
+  }
+
   function openCsvTemplateModal() {
-    const templates = [
-      {
-        id: 'inventory',
-        label: 'Inventory template',
-        filename: 'nexit-csv-template-inventory.csv',
-        headerRow: [
-          'Device ID', 'Device name', 'Serial number', 'Asset type', 'Fixed Asset Number', 'Deployment Status', 'Condition',
-          'Country', 'Ownership', 'Compliance', 'OS', 'OS Version', 'Azure AD registered', 'JoinType', 'Enrollment date',
-          'Managed by', 'Primary user display name', 'Primary user email address', 'Primary user UPN',
-          'Intune GroupName', 'Intune Group Tag', 'Total storage (GB)', 'Free storage', 'Firmware version',
-          'UPS Capacity (VA)', 'Battery replacement date', 'Last check-in', 'Warranty Start Date', 'Warranty End Date',
-          'Manufacturer', 'Model', 'Location', 'Device IP'
-        ],
-        sampleRow: [
-          'INT-1001', 'LAP-SG-001', 'SG-1001', 'laptop', 'FA-000123', 'In Use', 'Good',
-          'Singapore', 'Corporate', 'Compliant', 'Windows 11', '23H2', 'Yes', 'Azure AD joined', '2024-01-15',
-          'MDM', 'Alex Ng', 'alex.ng@contoso.com', 'alex.ng@contoso.com',
-          'SG-Laptops', 'SG', '512', '123456789012', '1.12.0',
-          '', '', '2026-11-01', '2024-01-15', '2027-01-14',
-          'Dell', 'Latitude 5440', 'Singapore', '10.10.20.31'
-        ]
-      },
-      {
-        id: 'users',
-        label: 'User list template',
-        filename: 'nexit-csv-template-users.csv',
-        headerRow: ['Name', 'Email', 'Account Active', 'Country', 'Location'],
-        sampleRow: ['Alex User', 'alex.ng@contoso.com', 'YES', 'Singapore', '']
-      }
-    ];
+    const templates = [buildInventoryTemplateDefinition(), buildUserTemplateDefinition()];
     Modal.open({
       title: 'CSV Template Samples',
       confirmText: 'Download template',
@@ -1228,7 +1399,7 @@ App.registerModule('inventory', (() => {
           <span class="csv-template-name">${escapeHtml(template.label)}</span>
           <pre class="csv-template-preview">${escapeHtml(template.headerRow.join(','))}\n${escapeHtml(template.sampleRow.map((value) => value ?? '').join(','))}</pre>
         </label>`).join('')}
-        <p class="form-help">Choose a template sample and download it before creating your own CSV.</p>
+        <p class="form-help">Headers are generated from the app's column definitions (single source of truth). Dates use DD-MMM-YYYY (e.g. 05-Dec-2021). Booleans use YES/NO. Excel may mangle leading zeros and long numeric strings; import via <strong>Data → From Text/CSV</strong> and set ID/code columns to <strong>Text</strong> (quoting alone does not prevent coercion). UTF-8 with BOM is used for Excel compatibility.</p>
       </div>`,
       onConfirm: () => {
         const selectedId = document.querySelector('input[name="csvTemplateChoice"]:checked')?.value;
@@ -1606,7 +1777,7 @@ App.registerModule('inventory', (() => {
                     return getInventoryField(device, col);
                   })()
                 : getInventoryField(device, col);
-        if (col === 'Warranty Start Date' || col === 'Warranty End Date') {
+        if (['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date'].includes(col)) {
           return `<td>${escapeHtml(dateInputValue(value) || '—')}</td>`;
         }
         if (col === 'Custody Status') {
@@ -1915,7 +2086,6 @@ App.registerModule('inventory', (() => {
       canonicalByKey.forEach((device, key) => {
         const serial = String(device['Serial number'] || device['IntuneGroup.SerialNumber'] || '').replace(/--?\d+$/, '');
         device['Serial number'] = serial;
-        device['IntuneGroup.SerialNumber'] = serial;
         device['Duplicate Serial'] = false;
       });
     }
@@ -1972,7 +2142,6 @@ App.registerModule('inventory', (() => {
           candidate = `${baseSerial}-${suffix}`;
         }
         addedRecord['Serial number'] = candidate;
-        addedRecord['IntuneGroup.SerialNumber'] = candidate;
         addedRecord['Duplicate Serial'] = true;
         occupiedSerials.add(normalizeSerial(candidate));
         duplicatesKept += 1;
@@ -1999,7 +2168,7 @@ App.registerModule('inventory', (() => {
     ['Intune GroupName', 'Intune GroupName'], ['Intune Group Tag', 'Intune Group Tag'],
     ['Total storage (GB)', 'Total storage (GB)'], ['Free storage', 'Free storage (bytes)'],
     ['Last check-in', 'Last check-in'], ['Enrollment date', 'Enrollment date'],
-    ['Warranty Start Date', 'Warranty Start Date'], ['Warranty End Date', 'Warranty End Date'],
+    ['Purchase Date', 'Purchase Date'], ['Warranty Start Date', 'Warranty Start Date'], ['Warranty End Date', 'Warranty End Date'], ['Disposal Date', 'Disposal Date'],
     ['Device Online Status', 'Device Online Status']
   ];
 
@@ -2038,12 +2207,12 @@ App.registerModule('inventory', (() => {
               ? getDeviceOnlineStatus(device)
               : key === 'Age'
                 ? getWarrantyAge(getInventoryField(device, 'Warranty Start Date'), getInventoryField(device, 'Warranty End Date'))
-                : ['Warranty Start Date', 'Warranty End Date'].includes(key)
+                : ['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date'].includes(key)
                   ? dateInputValue(getInventoryField(device, key))
                   : getInventoryField(device, key)));
         const mixed = values.some((value) => value !== values[0]);
         const rawValue = mixed ? '' : values[0];
-        const value = !mixed && ['Warranty Start Date', 'Warranty End Date'].includes(key) ? dateInputValue(rawValue) : rawValue;
+        const value = !mixed && ['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date'].includes(key) ? dateInputValue(rawValue) : rawValue;
         const mixedAttributes = mixed ? ' data-mixed="true"' : '';
         const enumOptions = App.fieldOptions?.[key];
         const control = key === 'Replaced By Device Serial Number'
@@ -2058,7 +2227,7 @@ App.registerModule('inventory', (() => {
           ? `<select class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}"${mixedAttributes}>${mixed ? '<option value="" selected>Multiple values</option>' : '<option value="">Select a value</option>'}${buildEnumOptionsHtml(window.DEPLOYMENT_STATUS, mixed ? '' : rawValue, ' (legacy)')}</select>`
           : key === 'condition'
           ? `<select class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}"${mixedAttributes}>${mixed ? '<option value="" selected>Multiple values</option>' : '<option value="">Select a value</option>'}${buildEnumOptionsHtml(window.CONDITION, mixed ? '' : rawValue, ' (legacy)', window.CONDITION_LABELS)}</select>`
-          : `<input class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}" value="${escapeHtml(value)}"${key === 'Age' ? ' readonly' : ''}${key === 'Total storage (GB)' ? ' type="number" min="0" step="0.01"' : ''}${mixed ? ' placeholder="Multiple values" data-mixed="true"' : ''}${!mixed && ['Warranty Start Date', 'Warranty End Date'].includes(key) ? ' placeholder="dd-mmm-yyyy"' : ''}>`;
+          : `<input class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}" value="${escapeHtml(value)}"${key === 'Age' ? ' readonly' : ''}${key === 'Total storage (GB)' ? ' type="number" min="0" step="0.01"' : ''}${mixed ? ' placeholder="Multiple values" data-mixed="true"' : ''}${!mixed && ['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date'].includes(key) ? ' placeholder="dd-mmm-yyyy"' : ''}>`;
         return `<label class="bulk-edit-field"><span>${escapeHtml(label)}</span>${control}</label>`;
       }).join('')}</form>`,
       onOpen: () => {
@@ -2133,14 +2302,24 @@ App.registerModule('inventory', (() => {
           return;
         }
         const updatedDevices = [];
+        let bulkDateError = '';
         indexes.forEach((index) => {
+          if (bulkDateError) return;
           const updated = { ...inventory[index] };
           BULK_EDIT_FIELDS.forEach(([field]) => {
+            if (bulkDateError) return;
             const input = form.elements.namedItem(`value:${field}`);
+            if (!input) return;
             if (field === 'Device Online Status' && input.dataset.edited !== 'true') return;
             if (field === 'Age') return;
             if (input.dataset.mixed === 'true' && input.dataset.edited !== 'true') return;
             const value = String(formData.get(`value:${field}`) ?? '').trim();
+            if (['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date'].includes(field)) {
+              const normalized = normalizeDateInput(value, { allowAmbiguousSlash: false });
+              if (normalized.error) { bulkDateError = `${field}: ${normalized.error}`; return; }
+              updated[field] = normalized.iso;
+              return;
+            }
             if (field === 'deployment_status' || field === 'condition') {
               updated[field] = value;
               updated['Status Label'] = deriveStatusLabel(updated);
@@ -2172,6 +2351,10 @@ App.registerModule('inventory', (() => {
           updatedDevices.push(updated);
           inventory[index] = updated;
         });
+        if (bulkDateError) {
+          Toast.show(bulkDateError, 'error', 6000);
+          return;
+        }
         if (updatedDevices.some((device) => !device['Device name'] || !device['Serial number'])) {
           Toast.show('Device name and serial number are required.', 'error');
           return;
@@ -2221,13 +2404,13 @@ App.registerModule('inventory', (() => {
     const selectedType = isEditing ? getAssetType(device) : (defaultType ? resolveDeviceTypeValue(defaultType) : '');
     const staffOptions = App.modules.users?.checkoutOptions?.() || [];
     const primaryFields = ['Fixed Asset Number', 'Device ID', 'Device name', 'Serial number', 'Manufacturer', 'Model'];
-    const warrantyFields = ['Warranty Start Date', 'Warranty End Date'];
+    const warrantyFields = ['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date'];
     const renderEditableField = (key) => {
       const [, label] = EDITABLE_FIELDS.find(([field]) => field === key) || [key, key];
       const currentValue = key === 'Device Online Status' ? getDeviceOnlineStatus(device)
         : key === 'Total storage (GB)' ? getTotalStorageGb(device) ?? ''
           : getInventoryField(device, key);
-      const value = ['Warranty Start Date', 'Warranty End Date', 'Battery replacement date'].includes(key)
+      const value = ['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date', 'Battery replacement date'].includes(key)
         ? dateInputValue(currentValue)
         : currentValue;
       const required = ['Device name', 'Serial number'].includes(key);
@@ -2235,7 +2418,7 @@ App.registerModule('inventory', (() => {
         ? `<select class="form-control" name="Country"><option value="">Select a country</option>${Object.entries(DEVICE_COUNTRIES).map(([code, country]) => `<option value="${escapeHtml(country)}" ${value === country ? 'selected' : ''}>${escapeHtml(country)}</option>`).join('')}</select>`
         : key === 'Device Online Status'
         ? `<select class="form-control" name="${escapeHtml(key)}" data-online-status="true">${['Active', 'Inactive>90days', 'Unknown'].map((status) => `<option value="${escapeHtml(status)}" ${value === status ? 'selected' : ''}>${escapeHtml(status)}</option>`).join('')}</select>`
-        : `<input class="form-control" name="${escapeHtml(key)}" value="${escapeHtml(value)}" ${required ? 'required' : ''}${key === 'Total storage (GB)' ? ' type="number" min="0" step="0.01"' : ''}${['Warranty Start Date', 'Warranty End Date', 'Battery replacement date'].includes(key) ? ' placeholder="dd-mmm-yyyy"' : ''}>`;
+        : `<input class="form-control" name="${escapeHtml(key)}" value="${escapeHtml(value)}" ${required ? 'required' : ''}${key === 'Total storage (GB)' ? ' type="number" min="0" step="0.01"' : ''}${['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date', 'Battery replacement date'].includes(key) ? ' placeholder="dd-mmm-yyyy"' : ''}>`;
       return `<label class="device-form-field"><span${key === 'Fixed Asset Number' ? ` title="${escapeHtml(FIXED_ASSET_NUMBER_HELP)}"` : ''}>${escapeHtml(label)}${required ? ' <span class="required">*</span>' : ''}</span>${control}</label>`;
     };
     const optionalFields = EDITABLE_FIELDS.filter(([key]) => (
@@ -2346,6 +2529,14 @@ App.registerModule('inventory', (() => {
         EDITABLE_FIELDS.forEach(([key]) => {
           if (key !== 'Device Online Status') updated[key] = String(formData.get(key) || '').trim();
         });
+        for (const dateKey of ['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date']) {
+          const normalized = normalizeDateInput(updated[dateKey], { allowAmbiguousSlash: false });
+          if (normalized.error) {
+            Toast.show(`${dateKey}: ${normalized.error}`, 'error', 6000);
+            return;
+          }
+          updated[dateKey] = normalized.iso;
+        }
         const onlineStatusInput = form.elements.namedItem('Device Online Status');
         if (onlineStatusInput?.dataset.edited === 'true') {
           updated['Device Online Status'] = String(formData.get('Device Online Status') || '').trim();
@@ -2380,7 +2571,6 @@ App.registerModule('inventory', (() => {
           return;
         }
         updated['Duplicate Serial'] = isEditing && normalizeSerial(updated['Serial number']) === normalizeSerial(device['Serial number']) ? device['Duplicate Serial'] === true : false;
-        updated['IntuneGroup.SerialNumber'] = updated['Serial number'];
         delete updated['Total storage'];
         delete updated['Total Storage'];
         if (isEditing) inventory[index] = updated;
@@ -2731,8 +2921,8 @@ App.registerModule('inventory', (() => {
           seen.add(serial);
           const match = serialMap.get(serial);
           if (match) {
-            match['Warranty Start Date'] = row['Warranty Start Date'] || '';
-            match['Warranty End Date'] = row['Warranty End Date'] || '';
+            match['Warranty Start Date'] = normalizeDateInput(row['Warranty Start Date'], { allowAmbiguousSlash: false }).iso || '';
+            match['Warranty End Date'] = normalizeDateInput(row['Warranty End Date'], { allowAmbiguousSlash: false }).iso || '';
             match['Warranty Match Status'] = 'Matched';
             matched.push(match);
           } else {

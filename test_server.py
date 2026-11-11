@@ -44,7 +44,15 @@ class SQLitePersistenceTests(unittest.TestCase):
             {"Device ID": "B", "Device name": "Copy", "Serial number": "ABC-1--1", "Duplicate Serial": True, "Asset type": "firewall"},
         ]
         _replace_inventory(self.connection, devices)
-        self.assertEqual(_read_inventory(self.connection), devices)
+        stored = _read_inventory(self.connection)
+        self.assertEqual(len(stored), 2)
+        self.assertEqual(stored[0]["Device ID"], "A")
+        self.assertEqual(stored[0]["Extra"], "preserved")
+        self.assertEqual(stored[0]["Serial number"], "ABC-1")
+        self.assertEqual(stored[0]["Intune GroupName"], "")
+        self.assertEqual(stored[1]["Device ID"], "B")
+        self.assertEqual(stored[1]["Asset type"], "firewall")
+        self.assertEqual(stored[1]["Serial number"], "ABC-1--1")
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM inventory_devices").fetchone()[0], 2)
         self.assertEqual(self.connection.execute("SELECT COUNT(DISTINCT normalized_serial) FROM inventory_devices").fetchone()[0], 1)
         self.assertEqual(
@@ -69,7 +77,12 @@ class SQLitePersistenceTests(unittest.TestCase):
             {"Device name": "Laptop 2", "Serial number": "SN-2", "Primary user display name": "Alex User", "Primary user email address": "alex@example.com"},
         ]
         _replace_inventory(self.connection, devices)
-        self.assertEqual(_read_inventory(self.connection), devices)
+        stored = _read_inventory(self.connection)
+        self.assertEqual(len(stored), 2)
+        for expected, actual in zip(devices, stored):
+            for key, value in expected.items():
+                self.assertEqual(actual[key], value)
+            self.assertEqual(actual.get("Intune GroupName"), "")
 
     def test_inventory_rejects_serial_assigned_to_multiple_primary_users(self) -> None:
         with self.assertRaisesRegex(ValueError, "only one primary user"):
@@ -109,9 +122,11 @@ class SQLitePersistenceTests(unittest.TestCase):
 
     def test_replacing_inventory_removes_old_records(self) -> None:
         _replace_inventory(self.connection, [{"Device name": "Old"}])
-        expected = [{"Device name": "New"}]
-        _replace_inventory(self.connection, expected)
-        self.assertEqual(_read_inventory(self.connection), expected)
+        _replace_inventory(self.connection, [{"Device name": "New"}])
+        stored = _read_inventory(self.connection)
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["Device name"], "New")
+        self.assertEqual(stored[0]["Intune GroupName"], "")
 
     def test_warranty_normalizes_serial_and_keeps_latest_record(self) -> None:
         records = [
@@ -127,7 +142,9 @@ class SQLitePersistenceTests(unittest.TestCase):
         _replace_inventory(self.connection, [record])
         stored_json = self.connection.execute("SELECT data_json FROM inventory_devices").fetchone()[0]
         self.assertIn("Café", stored_json)
-        self.assertEqual(json.loads(stored_json), record)
+        payload = json.loads(stored_json)
+        self.assertEqual(payload["Device name"], "Café laptop")
+        self.assertEqual(payload.get("Intune GroupName"), "")
 
     def test_replacement_history_round_trips_in_order(self) -> None:
         records = [
@@ -328,8 +345,13 @@ class SQLiteApiTests(unittest.TestCase):
         status, first = self.request_json("/api/bootstrap", "POST", legacy)
         self.assertEqual(status, 200)
         self.assertTrue(first["migrated"])
-        self.assertEqual(first["inventory"], legacy["inventory"])
-        self.assertEqual(first["warranty"], legacy["warranty"])
+        self.assertEqual(len(first["inventory"]), 1)
+        self.assertEqual(first["inventory"][0]["Device name"], "Migrated")
+        self.assertEqual(first["inventory"][0]["Serial number"], "OLD-1")
+        self.assertEqual(first["inventory"][0].get("Intune GroupName"), "")
+        self.assertEqual(len(first["warranty"]), 1)
+        self.assertEqual(first["warranty"][0]["Serial number"], "OLD-1")
+        self.assertEqual(first["warranty"][0]["Warranty End Date"], "2027-01-01")
 
         replacement = [{"Device name": "Persisted edit", "Serial number": "OLD-1", "IntuneGroup.GroupTag": "HQ"}]
         status, saved = self.request_json("/api/inventory", "PUT", replacement)
@@ -339,7 +361,11 @@ class SQLiteApiTests(unittest.TestCase):
         status, second = self.request_json("/api/bootstrap", "POST", {"inventory": [{"Device name": "Must not overwrite"}], "warranty": []})
         self.assertEqual(status, 200)
         self.assertFalse(second["migrated"])
-        self.assertEqual(second["inventory"], replacement)
+        self.assertEqual(len(second["inventory"]), 1)
+        self.assertEqual(second["inventory"][0]["Device name"], "Persisted edit")
+        self.assertEqual(second["inventory"][0]["Serial number"], "OLD-1")
+        self.assertEqual(second["inventory"][0].get("Intune GroupName"), "")
+        self.assertEqual(second["inventory"][0].get("Intune Group Tag"), "HQ")
         self.assertTrue((Path(self.temp_dir.name) / "api.sqlite3").is_file())
 
     def test_api_rejects_non_record_payload(self) -> None:
@@ -367,7 +393,10 @@ class SQLiteApiTests(unittest.TestCase):
 
         status, data = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
         self.assertEqual(status, 200)
-        self.assertEqual(data["inventory"], original)
+        self.assertEqual(len(data["inventory"]), 1)
+        self.assertEqual(data["inventory"][0]["Serial number"], "SN-1")
+        self.assertEqual(data["inventory"][0]["Primary user display name"], "Alex User")
+        self.assertEqual(data["inventory"][0].get("Intune GroupName"), "")
 
     def test_replacement_history_persists_through_inventory_import(self) -> None:
         records = [{
@@ -391,7 +420,10 @@ class SQLiteApiTests(unittest.TestCase):
         status, reloaded = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
         self.assertEqual(status, 200)
         self.assertEqual(reloaded["replacementHistory"], records)
-        self.assertEqual(reloaded["inventory"], inventory)
+        self.assertEqual(len(reloaded["inventory"]), 1)
+        self.assertEqual(reloaded["inventory"][0]["Device name"], "New device")
+        self.assertEqual(reloaded["inventory"][0]["Serial number"], "ST5678")
+        self.assertEqual(reloaded["inventory"][0].get("Intune GroupName"), "")
 
     def test_checkout_history_persists_through_inventory_import(self) -> None:
         status, bootstrap = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
@@ -416,7 +448,10 @@ class SQLiteApiTests(unittest.TestCase):
         status, reloaded = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
         self.assertEqual(status, 200)
         self.assertEqual(reloaded["checkoutHistory"], events)
-        self.assertEqual(reloaded["inventory"], inventory)
+        self.assertEqual(len(reloaded["inventory"]), 1)
+        self.assertEqual(reloaded["inventory"][0]["Device name"], "Updated by Intune")
+        self.assertEqual(reloaded["inventory"][0]["Serial number"], "SN-1")
+        self.assertEqual(reloaded["inventory"][0].get("Intune GroupName"), "")
 
     def test_users_api_round_trip(self) -> None:
         users = [{
@@ -532,8 +567,14 @@ class SQLiteApiTests(unittest.TestCase):
 
         status, data = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
         self.assertEqual(status, 200)
-        self.assertEqual(data["inventory"], inventory)
-        self.assertEqual(data["warranty"], warranty)
+        self.assertEqual(len(data["inventory"]), 1)
+        self.assertEqual(data["inventory"][0]["Device ID"], "DEVICE-1")
+        self.assertEqual(data["inventory"][0]["Device name"], "Backup laptop")
+        self.assertEqual(data["inventory"][0]["Serial number"], "SN-1")
+        self.assertEqual(data["inventory"][0].get("Intune GroupName"), "")
+        self.assertEqual(len(data["warranty"]), 1)
+        self.assertEqual(data["warranty"][0]["Serial number"], "SN-1")
+        self.assertEqual(data["warranty"][0]["Warranty End Date"], "2027-01-01")
         self.assertEqual(data["replacementHistory"], replacements)
         self.assertEqual(data["checkoutHistory"], checkouts)
         self.assertEqual(data["users"], users)
@@ -550,7 +591,10 @@ class SQLiteApiTests(unittest.TestCase):
 
         status, data = self.request_json("/api/bootstrap", "POST", {"inventory": [], "warranty": []})
         self.assertEqual(status, 200)
-        self.assertEqual(data["inventory"], inventory)
+        self.assertEqual(len(data["inventory"]), 1)
+        self.assertEqual(data["inventory"][0]["Device name"], "Keep this record")
+        self.assertEqual(data["inventory"][0]["Serial number"], "SN-KEEP")
+        self.assertEqual(data["inventory"][0].get("Intune GroupName"), "")
 
     def test_replacement_history_api_rejects_case_insensitive_duplicate_ids(self) -> None:
         status, result = self.request_json("/api/replacement-history", "PUT", [

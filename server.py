@@ -49,6 +49,130 @@ ELIGIBLE_HANDOUT_STATUS_NAMES = {
 }
 
 
+DATE_DISPLAY_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+DATE_MONTH_INDEX = {name.lower(): index + 1 for index, name in enumerate(DATE_DISPLAY_MONTHS)}
+REMOVED_INTUNE_KEYS = {
+    "IntuneGroup.DeviceName",
+    "IntuneGroup.SerialNumber",
+    "Intune SerialNumber",
+    "IntuneGroup.Model",
+    "Intune Group Model",
+    "IntuneGroup.Manufacturer",
+    "Intune Group Manufacturer",
+}
+INTUNE_GROUP_NAME_KEY = "Intune GroupName"
+LEGACY_INTUNE_GROUP_NAME_KEYS = ("IntuneGroup.GroupName", "Intune.GroupName", "IntuneGroup GroupName")
+
+
+def _is_valid_calendar_date(year: int, month: int, day: int) -> bool:
+    try:
+        datetime(year, month, day)
+    except ValueError:
+        return False
+    return True
+
+
+def _excel_serial_to_iso(value: str) -> str | None:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"\d+(?:\.0+)?", text):
+        return None
+    serial = float(text)
+    if serial <= 0 or serial > 2958465:
+        return None
+    # Excel 1900 date system with 1899-12-30 epoch (accounts for Excel 1900 leap-year bug)
+    days = int(round(serial))
+    base = datetime(1899, 12, 30)
+    try:
+        date = base.fromordinal(base.toordinal() + days)
+    except (OverflowError, ValueError):
+        return None
+    return date.strftime("%Y-%m-%d")
+
+
+def normalize_inventory_date(value: Any, *, strict: bool = True) -> tuple[str, str]:
+    """Return (iso_yyyy_mm_dd_or_empty, error_message_or_empty).
+
+    Accepts DD-MMM-YYYY, YYYY-MM-DD, and Excel serial numbers. Rejects ambiguous
+    slash dates (e.g. 01/02/2024) when strict=True. Sentinel 00-Jan-1900 becomes blank.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return "", ""
+    if raw.casefold() in {"00-jan-1900", "0-jan-1900"}:
+        return "", ""
+
+    display = re.fullmatch(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})", raw)
+    if display:
+        day = int(display.group(1))
+        month = DATE_MONTH_INDEX.get(display.group(2).casefold())
+        year = int(display.group(3))
+        if month and _is_valid_calendar_date(year, month, day):
+            return f"{year:04d}-{month:02d}-{day:02d}", ""
+        return "", f"Invalid date \"{raw}\". Use DD-MMM-YYYY (e.g. 05-Dec-2021)."
+
+    iso = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if iso:
+        year = int(iso.group(1))
+        month = int(iso.group(2))
+        day = int(iso.group(3))
+        if _is_valid_calendar_date(year, month, day):
+            return f"{year:04d}-{month:02d}-{day:02d}", ""
+        return "", f"Invalid date \"{raw}\". Use YYYY-MM-DD or DD-MMM-YYYY."
+
+    slash = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})", raw)
+    if slash:
+        first = int(slash.group(1))
+        second = int(slash.group(2))
+        year = int(slash.group(3))
+        if first > 12 and second <= 12:
+            day, month = first, second
+        elif second > 12 and first <= 12:
+            day, month = second, first
+        elif strict:
+            return "", f"Ambiguous date \"{raw}\". Use DD-MMM-YYYY or YYYY-MM-DD instead of guessing."
+        else:
+            day, month = first, second
+        if _is_valid_calendar_date(year, month, day):
+            return f"{year:04d}-{month:02d}-{day:02d}", ""
+        return "", f"Invalid date \"{raw}\"."
+
+    excel_iso = _excel_serial_to_iso(raw)
+    if excel_iso:
+        return excel_iso, ""
+
+    if strict:
+        return "", f"Unsupported date format \"{raw}\". Use DD-MMM-YYYY or YYYY-MM-DD."
+    return "", ""
+
+
+def iso_to_display_date(value: Any) -> str:
+    iso, _error = normalize_inventory_date(value, strict=False)
+    if not iso:
+        raw = str(value or "").strip()
+        match = re.fullmatch(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})", raw)
+        if match:
+            month = DATE_MONTH_INDEX.get(match.group(2).casefold())
+            if month:
+                return f"{int(match.group(1)):02d}-{DATE_DISPLAY_MONTHS[month - 1]}-{int(match.group(3)):04d}"
+        return ""
+    year, month, day = iso.split("-")
+    return f"{day}-{DATE_DISPLAY_MONTHS[int(month) - 1]}-{year}"
+
+
+def normalize_inventory_record_keys(record: dict[str, Any]) -> dict[str, Any]:
+    """Canonicalize keys: standardize Intune GroupName (user-requested), drop removed Intune fields."""
+    normalized = dict(record)
+    group_name = _as_text(normalized, INTUNE_GROUP_NAME_KEY, *LEGACY_INTUNE_GROUP_NAME_KEYS)
+    for key in LEGACY_INTUNE_GROUP_NAME_KEYS:
+        normalized.pop(key, None)
+    if group_name or INTUNE_GROUP_NAME_KEY in record or any(key in record for key in LEGACY_INTUNE_GROUP_NAME_KEYS):
+        normalized[INTUNE_GROUP_NAME_KEY] = group_name
+    for key in REMOVED_INTUNE_KEYS:
+        normalized.pop(key, None)
+    return normalized
+
+
+
 def connect_database(path: Path | None = None) -> sqlite3.Connection:
     path = path or DATABASE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,8 +194,10 @@ def connect_database(path: Path | None = None) -> sqlite3.Connection:
             manufacturer TEXT NOT NULL DEFAULT '',
             model TEXT NOT NULL DEFAULT '',
             compliance TEXT NOT NULL DEFAULT '',
+            purchase_date TEXT DEFAULT NULL,
             warranty_start_date TEXT NOT NULL DEFAULT '',
             warranty_end_date TEXT NOT NULL DEFAULT '',
+            disposal_date TEXT DEFAULT NULL,
             duplicate_serial INTEGER NOT NULL DEFAULT 0,
             data_json TEXT NOT NULL
         );
@@ -205,6 +331,77 @@ def connect_database(path: Path | None = None) -> sqlite3.Connection:
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(inventory_devices)")}
     if "device_type" not in columns:
         connection.execute("ALTER TABLE inventory_devices ADD COLUMN device_type TEXT NOT NULL DEFAULT 'laptop'")
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(inventory_devices)")}
+    if "purchase_date" not in columns or "disposal_date" not in columns:
+        # Option A (approved): safe recreate to position purchase/disposal near warranty columns.
+        previous_foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.executescript("""
+            CREATE TABLE inventory_devices_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                position INTEGER NOT NULL,
+                device_type TEXT NOT NULL DEFAULT 'laptop',
+                device_id TEXT NOT NULL DEFAULT '',
+                device_name TEXT NOT NULL DEFAULT '',
+                serial_number TEXT NOT NULL DEFAULT '',
+                normalized_serial TEXT NOT NULL DEFAULT '',
+                group_name TEXT NOT NULL DEFAULT '',
+                group_tag TEXT NOT NULL DEFAULT '',
+                manufacturer TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                compliance TEXT NOT NULL DEFAULT '',
+                purchase_date TEXT DEFAULT NULL,
+                warranty_start_date TEXT NOT NULL DEFAULT '',
+                warranty_end_date TEXT NOT NULL DEFAULT '',
+                disposal_date TEXT DEFAULT NULL,
+                duplicate_serial INTEGER NOT NULL DEFAULT 0,
+                data_json TEXT NOT NULL
+            );
+            INSERT INTO inventory_devices_new (
+                id, position, device_type, device_id, device_name, serial_number, normalized_serial,
+                group_name, group_tag, manufacturer, model, compliance,
+                purchase_date, warranty_start_date, warranty_end_date, disposal_date,
+                duplicate_serial, data_json
+            )
+            SELECT
+                id, position, device_type, device_id, device_name, serial_number, normalized_serial,
+                group_name, group_tag, manufacturer, model, compliance,
+                NULLIF(trim(COALESCE(json_extract(data_json,'$."Purchase Date"'), json_extract(data_json,'$."purchase_date"'), '')), ''),
+                warranty_start_date,
+                warranty_end_date,
+                NULLIF(trim(COALESCE(json_extract(data_json,'$."Disposal Date"'), json_extract(data_json,'$."disposal_date"'), '')), ''),
+                duplicate_serial,
+                data_json
+            FROM inventory_devices;
+            DROP TABLE inventory_devices;
+            ALTER TABLE inventory_devices_new RENAME TO inventory_devices;
+        """)
+        connection.execute(f"PRAGMA foreign_keys={'ON' if previous_foreign_keys else 'OFF'}")
+        # Recreate inventory triggers dropped with the old table.
+        connection.executescript("""
+            CREATE TRIGGER IF NOT EXISTS inventory_enum_insert
+            BEFORE INSERT ON inventory_devices
+            BEGIN
+              SELECT CASE WHEN trim(COALESCE(json_extract(NEW.data_json, '$."Replacement Status"'), '')) <> ''
+                AND NOT EXISTS (SELECT 1 FROM asset_field_options WHERE field_name='Replacement Status' AND value=json_extract(NEW.data_json, '$."Replacement Status"'))
+                THEN RAISE(ABORT, 'Invalid Replacement Status enum value') END;
+              SELECT CASE WHEN trim(COALESCE(json_extract(NEW.data_json, '$."Staff Member Lifecycle Status"'), '')) <> ''
+                AND NOT EXISTS (SELECT 1 FROM asset_field_options WHERE field_name='Staff Member Lifecycle Status' AND value=json_extract(NEW.data_json, '$."Staff Member Lifecycle Status"'))
+                THEN RAISE(ABORT, 'Invalid Staff Member Lifecycle Status enum value') END;
+            END;
+            CREATE TRIGGER IF NOT EXISTS inventory_enum_update
+            BEFORE UPDATE OF data_json ON inventory_devices
+            BEGIN
+              SELECT CASE WHEN trim(COALESCE(json_extract(NEW.data_json, '$."Replacement Status"'), '')) <> ''
+                AND NOT EXISTS (SELECT 1 FROM asset_field_options WHERE field_name='Replacement Status' AND value=json_extract(NEW.data_json, '$."Replacement Status"'))
+                THEN RAISE(ABORT, 'Invalid Replacement Status enum value') END;
+              SELECT CASE WHEN trim(COALESCE(json_extract(NEW.data_json, '$."Staff Member Lifecycle Status"'), '')) <> ''
+                AND NOT EXISTS (SELECT 1 FROM asset_field_options WHERE field_name='Staff Member Lifecycle Status' AND value=json_extract(NEW.data_json, '$."Staff Member Lifecycle Status"'))
+                THEN RAISE(ABORT, 'Invalid Staff Member Lifecycle Status enum value') END;
+            END;
+        """)
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_serial ON inventory_devices(normalized_serial)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_group ON inventory_devices(group_name, group_tag)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_device_type ON inventory_devices(device_type)")
     return connection
 
@@ -225,8 +422,13 @@ def _create_database_backup() -> Path:
     os.close(descriptor)
     backup_path = Path(backup_name)
     try:
-        with database_connection() as source, closing(sqlite3.connect(backup_path)) as destination:
-            source.backup(destination)
+        # Use an autocommit connection for backup to avoid implicit-transaction locks/hangs.
+        source = sqlite3.connect(str(DATABASE_PATH), isolation_level=None)
+        try:
+            with closing(sqlite3.connect(backup_path)) as destination:
+                source.backup(destination)
+        finally:
+            source.close()
         return backup_path
     except (OSError, sqlite3.Error):
         backup_path.unlink(missing_ok=True)
@@ -362,6 +564,30 @@ def _validate_device_status(record: dict[str, Any]) -> None:
         raise ValueError(f"Unknown disposition method: {disposition_method}.")
 
 
+def _normalize_inventory_date_field(record: dict[str, Any], *keys: str, strict: bool = True) -> str:
+    """Normalize the first present/non-empty date among keys to ISO YYYY-MM-DD and store back to canonical key."""
+    canonical = keys[0]
+    raw = ""
+    for key in keys:
+        if key in record and str(record.get(key) or "").strip() != "":
+            raw = str(record.get(key) or "").strip()
+            break
+    if not raw:
+        # ensure canonical key is blank string if explicitly present as empty-like? keep absent unless present
+        if any(key in record for key in keys):
+            record[canonical] = ""
+        for key in keys[1:]:
+            record.pop(key, None)
+        return ""
+    iso, error = normalize_inventory_date(raw, strict=strict)
+    if error:
+        raise ValueError(f"{canonical}: {error}")
+    record[canonical] = iso
+    for key in keys[1:]:
+        record.pop(key, None)
+    return iso
+
+
 def _replace_inventory(connection: sqlite3.Connection, devices: list[dict[str, Any]]) -> None:
     assignments: dict[str, list[tuple[str, str]]] = {}
     for record in devices:
@@ -387,29 +613,46 @@ def _replace_inventory(connection: sqlite3.Connection, devices: list[dict[str, A
 
     connection.execute("DELETE FROM inventory_devices")
     for position, record in enumerate(devices):
-        serial = _as_text(record, "Serial number", "IntuneGroup.SerialNumber")
+        # Capture legacy values before canonicalization drops removed keys.
+        serial = _as_text(record, "Serial number", "IntuneGroup.SerialNumber", "Intune SerialNumber")
+        group_name = _as_text(record, INTUNE_GROUP_NAME_KEY, *LEGACY_INTUNE_GROUP_NAME_KEYS)
+        group_tag = _as_text(record, "IntuneGroup.GroupTag", "Intune Group Tag", "Group Tag", "GroupTag")
+        payload = normalize_inventory_record_keys(record)
+        purchase_date = _normalize_inventory_date_field(payload, "Purchase Date", "purchase_date")
+        warranty_start = _normalize_inventory_date_field(payload, "Warranty Start Date", "warranty_start_date", "Warranty start date")
+        warranty_end = _normalize_inventory_date_field(payload, "Warranty End Date", "warranty_end_date", "Warranty end date")
+        disposal_date = _normalize_inventory_date_field(payload, "Disposal Date", "disposal_date")
+        # Keep standardized/canonical fields in payload.
+        payload[INTUNE_GROUP_NAME_KEY] = group_name
+        if group_tag or "Intune Group Tag" in record or "IntuneGroup.GroupTag" in record or "Group Tag" in record or "GroupTag" in record:
+            payload["Intune Group Tag"] = group_tag
+        if serial:
+            payload["Serial number"] = serial
         connection.execute(
             """INSERT INTO inventory_devices (
                 position, device_type, device_id, device_name, serial_number, normalized_serial,
                 group_name, group_tag, manufacturer, model, compliance,
-                warranty_start_date, warranty_end_date, duplicate_serial, data_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                purchase_date, warranty_start_date, warranty_end_date, disposal_date,
+                duplicate_serial, data_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 position,
-                _inventory_device_type(record),
-                _as_text(record, "Device ID"),
-                _as_text(record, "Device name"),
+                _inventory_device_type(payload),
+                _as_text(payload, "Device ID"),
+                _as_text(payload, "Device name"),
                 serial,
                 _serial_key(serial),
-                _as_text(record, "IntuneGroup.GroupName"),
-                _as_text(record, "IntuneGroup.GroupTag"),
-                _as_text(record, "Manufacturer"),
-                _as_text(record, "Model"),
-                _as_text(record, "Compliance"),
-                _as_text(record, "Warranty Start Date"),
-                _as_text(record, "Warranty End Date"),
-                int(record.get("Duplicate Serial") is True),
-                json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+                group_name,
+                group_tag,
+                _as_text(payload, "Manufacturer"),
+                _as_text(payload, "Model"),
+                _as_text(payload, "Compliance"),
+                purchase_date or None,
+                warranty_start or "",
+                warranty_end or "",
+                disposal_date or None,
+                int(payload.get("Duplicate Serial") is True),
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             ),
         )
 
@@ -437,10 +680,13 @@ def _inventory_device_type(record: dict[str, Any]) -> str:
 def _replace_warranty(connection: sqlite3.Connection, records: list[dict[str, Any]]) -> None:
     connection.execute("DELETE FROM warranty_records")
     for record in records:
-        serial = _as_text(record, "Serial number")
+        payload = dict(record)
+        serial = _as_text(payload, "Serial number")
         normalized = _serial_key(serial)
         if not normalized:
             continue
+        warranty_start = _normalize_inventory_date_field(payload, "Warranty Start Date", "warranty_start_date", "Warranty start date")
+        warranty_end = _normalize_inventory_date_field(payload, "Warranty End Date", "warranty_end_date", "Warranty end date")
         connection.execute(
             """INSERT INTO warranty_records (
                 normalized_serial, serial_number, warranty_start_date, warranty_end_date, data_json
@@ -453,23 +699,48 @@ def _replace_warranty(connection: sqlite3.Connection, records: list[dict[str, An
             (
                 normalized,
                 serial,
-                _as_text(record, "Warranty Start Date"),
-                _as_text(record, "Warranty End Date"),
-                json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+                warranty_start,
+                warranty_end,
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             ),
         )
 
 
 def _read_inventory(connection: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [json.loads(row["data_json"]) for row in connection.execute(
-        "SELECT data_json FROM inventory_devices ORDER BY position, id"
-    )]
+    records: list[dict[str, Any]] = []
+    for row in connection.execute("SELECT * FROM inventory_devices ORDER BY position, id"):
+        payload = json.loads(row["data_json"])
+        # Backward-compat normalization on read (does not persist until next write).
+        payload = normalize_inventory_record_keys(payload)
+        if row["purchase_date"]:
+            payload["Purchase Date"] = row["purchase_date"]
+        elif "Purchase Date" in payload:
+            payload["Purchase Date"] = str(payload.get("Purchase Date") or "")
+        if row["disposal_date"]:
+            payload["Disposal Date"] = row["disposal_date"]
+        elif "Disposal Date" in payload:
+            payload["Disposal Date"] = str(payload.get("Disposal Date") or "")
+        if row["warranty_start_date"]:
+            payload["Warranty Start Date"] = row["warranty_start_date"]
+        if row["warranty_end_date"]:
+            payload["Warranty End Date"] = row["warranty_end_date"]
+        # Ensure standardized Intune GroupName present from column
+        if row["group_name"] or INTUNE_GROUP_NAME_KEY not in payload:
+            payload[INTUNE_GROUP_NAME_KEY] = row["group_name"] or _as_text(payload, INTUNE_GROUP_NAME_KEY)
+        records.append(payload)
+    return records
 
 
 def _read_warranty(connection: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [json.loads(row["data_json"]) for row in connection.execute(
-        "SELECT data_json FROM warranty_records ORDER BY serial_number"
-    )]
+    records: list[dict[str, Any]] = []
+    for row in connection.execute("SELECT * FROM warranty_records ORDER BY serial_number"):
+        payload = json.loads(row["data_json"])
+        if row["warranty_start_date"]:
+            payload["Warranty Start Date"] = row["warranty_start_date"]
+        if row["warranty_end_date"]:
+            payload["Warranty End Date"] = row["warranty_end_date"]
+        records.append(payload)
+    return records
 
 
 def _replace_replacement_history(connection: sqlite3.Connection, records: list[dict[str, Any]]) -> None:
@@ -638,12 +909,12 @@ def _replace_users(connection: sqlite3.Connection, records: list[dict[str, Any]]
         user_id = _as_text(record, "UserID").strip()
         name = _as_text(record, "Name").strip()
         existing_staff_type, existing_staff_source = existing_staff.get(user_id, (None, STAFF_TYPE_SOURCE_AUTO))
-        has_explicit_staff_type_source = any(key in record for key in ("staff_type_source", "staffTypeSource"))
         incoming_staff_type_source = _as_text(record, "staff_type_source", "staffTypeSource") or STAFF_TYPE_SOURCE_AUTO
+        explicit_recompute = bool(record.get("recompute_staff_type"))
         preserve_manual = (
             existing_staff_source == STAFF_TYPE_SOURCE_MANUAL
             and incoming_staff_type_source != STAFF_TYPE_SOURCE_MANUAL
-            and not (incoming_staff_type_source == STAFF_TYPE_SOURCE_AUTO and has_explicit_staff_type_source)
+            and not explicit_recompute
         )
         if preserve_manual:
             # A manual override is authoritative and must survive re-imports / re-detection.
@@ -654,8 +925,10 @@ def _replace_users(connection: sqlite3.Connection, records: list[dict[str, Any]]
             staff_type_raw = record.get("staff_type", record.get("staffType"))
             staff_type = str(staff_type_raw).strip() if staff_type_raw is not None else ""
             staff_type = staff_type or None
-            if staff_type_source == STAFF_TYPE_SOURCE_AUTO and staff_type is None:
+            if staff_type_source == STAFF_TYPE_SOURCE_AUTO and (staff_type is None or explicit_recompute):
                 staff_type, _vendor, _suspicious = _detect_staff_type(name)
+                if explicit_recompute:
+                    staff_type_source = STAFF_TYPE_SOURCE_AUTO
         payload = dict(record)
         payload.pop("staffType", None)
         payload.pop("staffTypeSource", None)
@@ -1084,7 +1357,7 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
             device = json.loads(row["data_json"])
             serial = _asset_serial(device).strip()
             fields = [serial, _as_text(device, "Model"), _as_text(device, "Country"),
-                      _as_text(device, "Fixed Asset Number"), _as_text(device, "Device name", "IntuneGroup.DeviceName")]
+                      _as_text(device, "Fixed Asset Number"), _as_text(device, "Device name")]
             if not serial or _serial_key(serial) in excluded or not _eligible_handout_device(device, active_checkouts):
                 continue
             if not any(needle in value.casefold() for value in fields):
@@ -1132,7 +1405,7 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                 identity = _device_staff_identity(connection, device, latest_events.get(_serial_key(serial)))
                 if user_id and identity.get("id", "").casefold() != user_id.casefold():
                     continue
-                fields = [serial, _as_text(device, "Device name", "IntuneGroup.DeviceName"),
+                fields = [serial, _as_text(device, "Device name"),
                           _as_text(device, "Model"), identity.get("name", ""), identity.get("email", "")]
                 if query and not any(needle in value.casefold() for value in fields):
                     continue
@@ -1629,7 +1902,7 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
 
 
 def main() -> None:
-    host = os.environ.get("NEXIT_HOST", "127.0.0.1")
+    host = os.environ.get("NEXIT_HOST", "0.0.0.0")
     port = int(os.environ.get("NEXIT_PORT", "8000"))
     connect_database().close()
     server = ThreadingHTTPServer((host, port), InventoryRequestHandler)

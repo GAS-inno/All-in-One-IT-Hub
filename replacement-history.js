@@ -70,12 +70,12 @@ App.registerModule('replacements', (() => {
 
   function inventoryDevice(serial) {
     const key = serialKey(serial);
-    return inventoryRows().find((device) => serialKey(device['Serial number'] || device['IntuneGroup.SerialNumber']) === key);
+    return inventoryRows().find((device) => serialKey(device['Serial number']) === key);
   }
 
   function inventoryDeviceName(serial) {
     const device = inventoryDevice(serial);
-    return device ? (device['Device name'] || device['IntuneGroup.DeviceName'] || 'Unnamed device') : '';
+    return device ? (device['Device name'] || 'Unnamed device') : '';
   }
 
   function csvCell(value) {
@@ -355,10 +355,10 @@ App.registerModule('replacements', (() => {
 
   function deviceOptions(listId) {
     const devices = inventoryRows()
-      .filter((device) => device['Serial number'] || device['IntuneGroup.SerialNumber'])
+      .filter((device) => device['Serial number'])
       .map((device) => ({
-        serial: String(device['Serial number'] || device['IntuneGroup.SerialNumber']).trim(),
-        name: String(device['Device name'] || device['IntuneGroup.DeviceName'] || 'Unnamed device')
+        serial: String(device['Serial number']).trim(),
+        name: String(device['Device name'] || 'Unnamed device')
       }))
       .sort((a, b) => a.name.localeCompare(b.name) || a.serial.localeCompare(b.serial));
     const seenSerials = new Set();
