@@ -78,6 +78,32 @@ The server automatically creates `nexit-assets.db` in the operating system's loc
 - Use the **Logout** button in the top bar to end your session.
 - Login accounts (`auth_users`) and auth sessions are stored in the same SQLite database but are **preserved** when **Clean Database** clears application data.
 
+#### Forgot admin credentials (local recovery)
+
+Recovery requires direct access to the local `nexit-assets.db` file on the machine running NexIT (no remote/web bypass). **Stop the NexIT server first** and back up the database file.
+
+1. **Find existing login usernames** (if you only forgot the password):
+   ```sh
+   sqlite3 "<DB_PATH>" "SELECT id, username, role, is_active, last_login_at FROM auth_users;"
+   ```
+   Then reset the password with the seed script:
+   ```sh
+   python3 seed_admin.py --username "<USERNAME>" --force-reset-password
+   ```
+   This resets the password, reactivates the account, and revokes existing sessions.
+
+2. **Emergency: remove all login accounts/sessions** (if you forgot all admin credentials and need to start over):
+   ```sh
+   sqlite3 "<DB_PATH>" "DELETE FROM auth_sessions; DELETE FROM auth_login_attempts; DELETE FROM auth_users;"
+   ```
+   This clears RBAC/login data only (inventory, staff-directory users, warranty, replacement, and checkout data are preserved). Then create a new admin:
+   ```sh
+   python3 seed_admin.py --username admin --password 'NewStrongPassword123!'
+   ```
+   (On Windows, use `py` instead of `python3` if needed. If `sqlite3` CLI is unavailable, perform the same queries via `python3`/`py` using `from server import connect_database`.)
+
+Restart the server and sign in with the new credentials.
+
 Database location:
 
 - Linux: `$XDG_DATA_HOME/NexIT-Asset-Inventory/nexit-assets.db`, or `~/.local/share/NexIT-Asset-Inventory/nexit-assets.db`
