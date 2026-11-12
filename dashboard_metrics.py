@@ -168,7 +168,7 @@ def _status(record: dict[str, Any]) -> str:
 
 
 def _warranty_date(record: dict[str, Any]) -> date | None:
-    """Parse warranty end date using shared date utilities (ISO storage, DD-MMM-YYYY/Excel serials accepted)."""
+    """Parse warranty end date using shared date utilities (YYYY-MM-DD; Excel serials accepted on import)."""
     value = _text(record, "Warranty End Date", "warrantyEndDate", "do not delete-warrantyEndDate_Dell", "Warranty Expiration Date")
     if not value:
         return None
@@ -456,7 +456,7 @@ def build_dashboard(
 def _is_stale(record: dict[str, Any], today: date) -> bool:
     """Return True when Last check-in is a valid date older than 90 days.
 
-    Uses shared date parsing (ISO, DD-MMM-YYYY, Excel serials; rejects ambiguous slash dates).
+    Uses shared date parsing (YYYY-MM-DD/Excel serials; rejects ambiguous/unsupported formats).
     Missing/placeholder/unparseable values return False to preserve existing behavior.
     """
     value = _text(record, "Last check-in", "Last Check-In", "Last checkin", "LastSyncDateTime")

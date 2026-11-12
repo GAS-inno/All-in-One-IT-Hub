@@ -2,17 +2,14 @@
  * Shared date utilities for NexIT (browser).
  *
  * Standards:
- * - Internal storage: ISO 8601 YYYY-MM-DD.
- * - UI display & CSV: DD-MMM-YYYY (e.g. 05-Dec-2021).
- * - Accepted inputs: DD-MMM-YYYY, YYYY-MM-DD, Excel serials (1899-12-30 epoch).
- * - Ambiguous numeric slash dates (e.g. 01/02/2024) are rejected.
- * - Placeholder/missing values ("not found", "null", empty/whitespace, etc.) are blank.
+ * - Storage, UI display, CSV import/export, and placeholders: YYYY-MM-DD (ISO 8601).
+ * - Accepted inputs: YYYY-MM-DD strictly; Excel serials (1899-12-30 epoch) tolerated on import.
+ * - Ambiguous numeric dates (e.g. 01/02/2024) are rejected with a clear error naming the required format.
+ * - Placeholder/missing values ("not found", "null", empty/whitespace, sentinels) are blank.
  */
 (function (global) {
   'use strict';
 
-  const DATE_DISPLAY_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const DATE_MONTH_INDEX = Object.fromEntries(DATE_DISPLAY_MONTHS.map((m, i) => [m.toLowerCase(), i + 1]));
   const PLACEHOLDERS = new Set(['', 'not found', 'null', 'none', 'n/a', 'na', 'unknown', '-', '00-jan-1900', '0-jan-1900']);
 
   function rawText(value) {
@@ -52,17 +49,9 @@
   function parseDateToIso(value, options) {
     const opts = options || {};
     const strict = opts.strict !== false;
+    const allowExcel = opts.allowExcel !== false;
     const raw = rawText(value);
     if (!raw || isPlaceholderDate(raw)) return { iso: '', error: '' };
-
-    const display = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
-    if (display) {
-      const day = Number(display[1]);
-      const month = DATE_MONTH_INDEX[display[2].toLowerCase()];
-      const year = Number(display[3]);
-      if (month && isValidCalendarDate(year, month, day)) return { iso: formatIso(year, month, day), error: '' };
-      return { iso: '', error: `Invalid date "${raw}". Use DD-MMM-YYYY (e.g. 05-Dec-2021).` };
-    }
 
     const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (isoMatch) {
@@ -70,48 +59,26 @@
       const month = Number(isoMatch[2]);
       const day = Number(isoMatch[3]);
       if (isValidCalendarDate(year, month, day)) return { iso: formatIso(year, month, day), error: '' };
-      return { iso: '', error: `Invalid date "${raw}". Use YYYY-MM-DD or DD-MMM-YYYY.` };
+      return { iso: '', error: `Invalid date "${raw}". Use YYYY-MM-DD (e.g. 2025-12-05).` };
     }
 
-    const slash = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-    if (slash) {
-      const first = Number(slash[1]);
-      const second = Number(slash[2]);
-      const year = Number(slash[3]);
-      let day, month;
-      if (first > 12 && second <= 12) {
-        day = first; month = second;
-      } else if (second > 12 && first <= 12) {
-        day = second; month = first;
-      } else if (strict) {
-        return { iso: '', error: `Ambiguous date "${raw}". Use DD-MMM-YYYY or YYYY-MM-DD instead of guessing.` };
-      } else {
-        day = first; month = second;
-      }
-      if (isValidCalendarDate(year, month, day)) return { iso: formatIso(year, month, day), error: '' };
-      return { iso: '', error: `Invalid date "${raw}".` };
+    if (allowExcel) {
+      const excelIso = excelSerialToIso(raw);
+      if (excelIso) return { iso: excelIso, error: '' };
     }
 
-    const excelIso = excelSerialToIso(raw);
-    if (excelIso) return { iso: excelIso, error: '' };
-
-    if (strict) return { iso: '', error: `Invalid date format "${raw}". Use DD-MMM-YYYY or YYYY-MM-DD.` };
+    if (strict) {
+      return { iso: '', error: `Invalid date format "${raw}". Required format: YYYY-MM-DD (e.g. 2025-12-05).` };
+    }
     return { iso: '', error: '' };
   }
 
   function formatIsoToDisplay(value) {
-    const result = parseDateToIso(value, { strict: false });
-    if (!result.iso) {
-      const raw = rawText(value);
-      const match = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
-      if (match) {
-        const month = DATE_MONTH_INDEX[match[2].toLowerCase()];
-        if (month) return `${String(Number(match[1])).padStart(2, '0')}-${DATE_DISPLAY_MONTHS[month - 1]}-${String(Number(match[3])).padStart(4, '0')}`;
-      }
-      return '';
-    }
-    const parts = result.iso.split('-');
-    return `${parts[2]}-${DATE_DISPLAY_MONTHS[Number(parts[1]) - 1]}-${parts[0]}`;
+    const result = parseDateToIso(value, { strict: false, allowExcel: true });
+    if (result.iso) return result.iso;
+    const raw = rawText(value);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    return '';
   }
 
   function parseDateValue(value) {
@@ -132,7 +99,6 @@
   }
 
   const api = {
-    DATE_DISPLAY_MONTHS,
     isPlaceholderDate,
     isValidCalendarDate,
     excelSerialToIso,

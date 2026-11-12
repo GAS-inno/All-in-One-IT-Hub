@@ -940,7 +940,7 @@ def _replace_checkout_history(connection: sqlite3.Connection, records: list[dict
             identity = asset_key.casefold()
         event_date = require_iso_date(event_date_raw, "Event date")
         if not event_date:
-            raise ValueError("Event date: A valid date is required. Use DD-MMM-YYYY or YYYY-MM-DD.")
+            raise ValueError("Event date: A valid date is required. Required format: YYYY-MM-DD (e.g. 2025-12-05).")
         parsed_date = datetime.strptime(event_date, "%Y-%m-%d").date()
         record["Event date"] = event_date
         expected_return_raw = _as_text(record, "Expected return date").strip()
@@ -1285,7 +1285,7 @@ def _save_replacement_record(connection: sqlite3.Connection, payload: Any) -> in
         raise ValueError("A device cannot replace itself.")
     replacement_date = require_iso_date(_as_text(record, "Replacement Date"), "Replacement Date")
     if not replacement_date:
-        raise ValueError("Replacement Date: A valid date is required. Use DD-MMM-YYYY or YYYY-MM-DD.")
+        raise ValueError("Replacement Date: A valid date is required. Required format: YYYY-MM-DD (e.g. 2025-12-05).")
     record["Replacement Date"] = replacement_date
 
     records = _read_replacement_history(connection)

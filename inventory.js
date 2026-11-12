@@ -563,7 +563,7 @@ App.registerModule('inventory', (() => {
     return Number(value).toFixed(2);
   }
 
-  // Shared date utilities (date-utils.js): ISO storage, DD-MMM-YYYY UI/CSV.
+  // Shared date utilities (date-utils.js): YYYY-MM-DD for storage, UI, and CSV.
   const DATE_UTILS = window.DateUtils || App.dateUtils || {
     parseDateToIso: (v) => ({ iso: String(v || '').trim().match(/^\d{4}-\d{2}-\d{2}$/) ? String(v).trim() : '', error: '' }),
     formatIsoToDisplay: (v) => String(v || ''),
@@ -572,7 +572,6 @@ App.registerModule('inventory', (() => {
     todayIso: () => new Date().toISOString().slice(0, 10),
     isPlaceholderDate: (v) => !String(v || '').trim(),
   };
-  const DATE_MONTHS_SHORT = DATE_UTILS.DATE_DISPLAY_MONTHS || ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
   function formatDisplayDateFromIso(iso) {
     return DATE_UTILS.formatIsoToDisplay(iso);
@@ -583,8 +582,8 @@ App.registerModule('inventory', (() => {
   }
 
   function normalizeDateInput(value, { allowAmbiguousSlash = false } = {}) {
-    // Shared parser rejects ambiguous slash dates in strict mode (allowAmbiguousSlash=false).
-    return DATE_UTILS.parseDateToIso(value, { strict: !allowAmbiguousSlash });
+    // Strict mode accepts YYYY-MM-DD and Excel serials; rejects ambiguous/unsupported formats.
+    return DATE_UTILS.parseDateToIso(value, { strict: !allowAmbiguousSlash, allowExcel: true });
   }
 
   function parseDateValue(value) {
@@ -618,7 +617,7 @@ App.registerModule('inventory', (() => {
 
   function dateInputValue(value) {
     const result = normalizeDateInput(value, { allowAmbiguousSlash: false });
-    if (result.iso) return formatDisplayDateFromIso(result.iso);
+    if (result.iso) return result.iso;
     // Legacy/unparseable values: show raw text for visibility but do not coerce to a date.
     const raw = String(value ?? '').trim();
     return (DATE_UTILS.isPlaceholderDate ? DATE_UTILS.isPlaceholderDate(raw) : /^0{1,2}-jan-1900$/i.test(raw)) ? '' : raw;
@@ -1338,8 +1337,8 @@ App.registerModule('inventory', (() => {
     { header: 'Primary user email address', example: 'alex.ng@contoso.com' },
     { header: 'Primary user UPN', example: 'alex.ng@contoso.com' },
     { header: 'Primary user display name', example: 'Alex Ng' },
-    { header: 'Enrollment date', example: '15-Jan-2024' },
-    { header: 'Last check-in', example: '01-Nov-2026' },
+    { header: 'Enrollment date', example: '2024-01-15' },
+    { header: 'Last check-in', example: '2026-11-01' },
     { header: 'Model', example: 'Latitude 5440' },
     { header: 'Manufacturer', example: 'Dell' },
     { header: 'Intune GroupName', example: 'SG-Laptops' },
@@ -1351,9 +1350,9 @@ App.registerModule('inventory', (() => {
     { header: 'Firmware version', example: '1.12.0' },
     { header: 'UPS Capacity (VA)', example: '' },
     { header: 'Battery replacement date', example: '' },
-    { header: 'Purchase Date', example: '05-Dec-2021' },
-    { header: 'Warranty Start Date', example: '15-Jan-2024' },
-    { header: 'Warranty End Date', example: '14-Jan-2027' },
+    { header: 'Purchase Date', example: '2021-12-05' },
+    { header: 'Warranty Start Date', example: '2024-01-15' },
+    { header: 'Warranty End Date', example: '2027-01-14' },
     { header: 'Disposal Date', example: '' },
     { header: 'Azure AD registered', example: 'YES' }
   ];
@@ -1420,7 +1419,7 @@ App.registerModule('inventory', (() => {
           <span class="csv-template-name">${escapeHtml(template.label)}</span>
           <pre class="csv-template-preview">${escapeHtml(template.headerRow.join(','))}\n${escapeHtml(template.sampleRow.map((value) => value ?? '').join(','))}</pre>
         </label>`).join('')}
-        <p class="form-help">Headers are generated from the app's column definitions (single source of truth). Dates use DD-MMM-YYYY (e.g. 05-Dec-2021). Booleans use YES/NO. Excel may mangle leading zeros and long numeric strings; import via <strong>Data → From Text/CSV</strong> and set ID/code columns to <strong>Text</strong> (quoting alone does not prevent coercion). UTF-8 with BOM is used for Excel compatibility.</p>
+        <p class="form-help">Headers are generated from the app's column definitions (single source of truth). Dates use YYYY-MM-DD (e.g. 2025-12-05). Booleans use YES/NO. Excel may mangle leading zeros and long numeric strings; import via <strong>Data → From Text/CSV</strong> and set ID/code columns to <strong>Text</strong> (quoting alone does not prevent coercion). UTF-8 with BOM is used for Excel compatibility.</p>
       </div>`,
       onConfirm: () => {
         const selectedId = document.querySelector('input[name="csvTemplateChoice"]:checked')?.value;
@@ -2257,7 +2256,7 @@ App.registerModule('inventory', (() => {
           ? `<select class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}"${mixedAttributes}>${mixed ? '<option value="" selected>Multiple values</option>' : '<option value="">Select a value</option>'}${buildEnumOptionsHtml(window.DEPLOYMENT_STATUS, mixed ? '' : rawValue, ' (legacy)')}</select>`
           : key === 'condition'
           ? `<select class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}"${mixedAttributes}>${mixed ? '<option value="" selected>Multiple values</option>' : '<option value="">Select a value</option>'}${buildEnumOptionsHtml(window.CONDITION, mixed ? '' : rawValue, ' (legacy)', window.CONDITION_LABELS)}</select>`
-          : `<input class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}" value="${escapeHtml(value)}"${key === 'Age' ? ' readonly' : ''}${key === 'Total storage (GB)' ? ' type="number" min="0" step="0.01"' : ''}${mixed ? ' placeholder="Multiple values" data-mixed="true"' : ''}${!mixed && ['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date'].includes(key) ? ' placeholder="dd-mmm-yyyy"' : ''}>`;
+          : `<input class="form-control" name="value:${escapeHtml(key)}" aria-label="${escapeHtml(label)}" value="${escapeHtml(value)}"${key === 'Age' ? ' readonly' : ''}${key === 'Total storage (GB)' ? ' type="number" min="0" step="0.01"' : ''}${mixed ? ' placeholder="Multiple values" data-mixed="true"' : ''}${!mixed && ['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date'].includes(key) ? ' placeholder="YYYY-MM-DD"' : ''}>`;
         return `<label class="bulk-edit-field"><span>${escapeHtml(label)}</span>${control}</label>`;
       }).join('')}</form>`,
       onOpen: () => {
@@ -2448,7 +2447,7 @@ App.registerModule('inventory', (() => {
         ? `<select class="form-control" name="Country"><option value="">Select a country</option>${Object.entries(DEVICE_COUNTRIES).map(([code, country]) => `<option value="${escapeHtml(country)}" ${value === country ? 'selected' : ''}>${escapeHtml(country)}</option>`).join('')}</select>`
         : key === 'Device Online Status'
         ? `<select class="form-control" name="${escapeHtml(key)}" data-online-status="true">${['Active', 'Inactive>90days', 'Unknown'].map((status) => `<option value="${escapeHtml(status)}" ${value === status ? 'selected' : ''}>${escapeHtml(status)}</option>`).join('')}</select>`
-        : `<input class="form-control" name="${escapeHtml(key)}" value="${escapeHtml(value)}" ${required ? 'required' : ''}${key === 'Total storage (GB)' ? ' type="number" min="0" step="0.01"' : ''}${['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date', 'Battery replacement date'].includes(key) ? ' placeholder="dd-mmm-yyyy"' : ''}>`;
+        : `<input class="form-control" name="${escapeHtml(key)}" value="${escapeHtml(value)}" ${required ? 'required' : ''}${key === 'Total storage (GB)' ? ' type="number" min="0" step="0.01"' : ''}${['Purchase Date', 'Warranty Start Date', 'Warranty End Date', 'Disposal Date', 'Battery replacement date'].includes(key) ? ' placeholder="YYYY-MM-DD"' : ''}>`;
       return `<label class="device-form-field"><span${key === 'Fixed Asset Number' ? ` title="${escapeHtml(FIXED_ASSET_NUMBER_HELP)}"` : ''}>${escapeHtml(label)}${required ? ' <span class="required">*</span>' : ''}</span>${control}</label>`;
     };
     const optionalFields = EDITABLE_FIELDS.filter(([key]) => (

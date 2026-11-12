@@ -62,7 +62,7 @@ App.registerModule('replacements', (() => {
     const raw = String(value || '').trim();
     if (!raw) return { iso: '', error: '' };
     if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return { iso: raw, error: '' };
-    return { iso: '', error: `Invalid date format "${raw}". Use DD-MMM-YYYY or YYYY-MM-DD.` };
+    return { iso: '', error: `Invalid date format "${raw}". Required format: YYYY-MM-DD (e.g. 2025-12-05).` };
   }
 
   function validDate(value) {
@@ -159,7 +159,7 @@ App.registerModule('replacements', (() => {
     if (normalized['Old Device Serial Number'] && serialKey(normalized['Old Device Serial Number']) === serialKey(normalized['New Device Serial Number'])) {
       errors.push('Old and new device serial numbers must be different.');
     }
-    if (!dateResult.iso) errors.push(dateResult.error ? `Replacement Date: ${dateResult.error}` : 'Replacement Date is required. Use DD-MMM-YYYY or YYYY-MM-DD.');
+    if (!dateResult.iso) errors.push(dateResult.error ? `Replacement Date: ${dateResult.error}` : 'Replacement Date is required. Required format: YYYY-MM-DD (e.g. 2025-12-05).');
     if (!REASONS.includes(normalized['Replacement Reason'])) errors.push('Select a valid Replacement Reason.');
     if (normalized['Old Device Condition'] && !CONDITIONS.includes(normalized['Old Device Condition'])) {
       errors.push('Select a valid Old Device Condition.');
