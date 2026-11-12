@@ -411,10 +411,7 @@ App.registerModule('inventory', (() => {
   }
 
   function getTodayDate() {
-    const today = new Date();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    return `${today.getFullYear()}-${month}-${day}`;
+    return (window.DateUtils || App.dateUtils)?.todayIso?.() || new Date().toISOString().slice(0, 10);
   }
 
   function isReturnOverdue(event) {
@@ -566,95 +563,32 @@ App.registerModule('inventory', (() => {
     return Number(value).toFixed(2);
   }
 
-  const DATE_MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const DATE_MONTH_INDEX = Object.fromEntries(DATE_MONTHS_SHORT.map((m, i) => [m.toLowerCase(), i + 1]));
-
-  function isValidCalendarDate(year, month, day) {
-    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
-    if (month < 1 || month > 12 || day < 1 || day > 31) return false;
-    const date = new Date(year, month - 1, day);
-    return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
-  }
-
-  function formatIsoDate(year, month, day) {
-    return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  }
+  // Shared date utilities (date-utils.js): ISO storage, DD-MMM-YYYY UI/CSV.
+  const DATE_UTILS = window.DateUtils || App.dateUtils || {
+    parseDateToIso: (v) => ({ iso: String(v || '').trim().match(/^\d{4}-\d{2}-\d{2}$/) ? String(v).trim() : '', error: '' }),
+    formatIsoToDisplay: (v) => String(v || ''),
+    parseDateValue: () => null,
+    excelSerialToIso: () => null,
+    todayIso: () => new Date().toISOString().slice(0, 10),
+    isPlaceholderDate: (v) => !String(v || '').trim(),
+  };
+  const DATE_MONTHS_SHORT = DATE_UTILS.DATE_DISPLAY_MONTHS || ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
   function formatDisplayDateFromIso(iso) {
-    const match = String(iso || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!match) return '';
-    const month = DATE_MONTHS_SHORT[Number(match[2]) - 1];
-    if (!month) return '';
-    return `${match[3]}-${month}-${match[1]}`;
+    return DATE_UTILS.formatIsoToDisplay(iso);
   }
 
   function excelSerialToIso(serialText) {
-    const text = String(serialText || '').trim();
-    if (!/^\d+(\.0+)?$/.test(text)) return null;
-    const serial = Number(text);
-    if (!Number.isFinite(serial) || serial <= 0 || serial > 2958465) return null;
-    // Excel 1900 date system with 1899-12-30 epoch (accounts for Excel 1900 leap-year bug)
-    const ms = Math.round((serial - 25569) * 86400000);
-    const date = new Date(ms);
-    if (Number.isNaN(date.getTime())) return null;
-    return formatIsoDate(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+    return DATE_UTILS.excelSerialToIso(serialText);
   }
 
   function normalizeDateInput(value, { allowAmbiguousSlash = false } = {}) {
-    const raw = String(value ?? '').trim();
-    if (!raw) return { iso: '', error: '' };
-    if (/^0{1,2}-jan-1900$/i.test(raw)) return { iso: '', error: '' };
-
-    const displayDate = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
-    if (displayDate) {
-      const day = Number(displayDate[1]);
-      const month = DATE_MONTH_INDEX[displayDate[2].toLowerCase()];
-      const year = Number(displayDate[3]);
-      if (month && isValidCalendarDate(year, month, day)) return { iso: formatIsoDate(year, month, day), error: '' };
-      return { iso: '', error: `Invalid date "${raw}". Use DD-MMM-YYYY (e.g. 05-Dec-2021).` };
-    }
-
-    const isoDate = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (isoDate) {
-      const year = Number(isoDate[1]);
-      const month = Number(isoDate[2]);
-      const day = Number(isoDate[3]);
-      if (isValidCalendarDate(year, month, day)) return { iso: formatIsoDate(year, month, day), error: '' };
-      return { iso: '', error: `Invalid date "${raw}". Use YYYY-MM-DD or DD-MMM-YYYY.` };
-    }
-
-    const slashDate = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-    if (slashDate) {
-      const first = Number(slashDate[1]);
-      const second = Number(slashDate[2]);
-      const year = Number(slashDate[3]);
-      let day;
-      let month;
-      if (first > 12 && second <= 12) {
-        day = first; month = second;
-      } else if (second > 12 && first <= 12) {
-        day = second; month = first;
-      } else if (allowAmbiguousSlash) {
-        day = first; month = second;
-      } else {
-        return { iso: '', error: `Ambiguous date "${raw}". Use DD-MMM-YYYY or YYYY-MM-DD instead of guessing.` };
-      }
-      if (isValidCalendarDate(year, month, day)) return { iso: formatIsoDate(year, month, day), error: '' };
-      return { iso: '', error: `Invalid date "${raw}".` };
-    }
-
-    const excelIso = excelSerialToIso(raw);
-    if (excelIso) return { iso: excelIso, error: '' };
-
-    return { iso: '', error: `Unsupported date format "${raw}". Use DD-MMM-YYYY or YYYY-MM-DD.` };
+    // Shared parser rejects ambiguous slash dates in strict mode (allowAmbiguousSlash=false).
+    return DATE_UTILS.parseDateToIso(value, { strict: !allowAmbiguousSlash });
   }
 
   function parseDateValue(value) {
-    const result = normalizeDateInput(value, { allowAmbiguousSlash: false });
-    if (!result.iso) return null;
-    const match = result.iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!match) return null;
-    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    return DATE_UTILS.parseDateValue ? DATE_UTILS.parseDateValue(value) : (normalizeDateInput(value).iso ? new Date(`${normalizeDateInput(value).iso}T00:00:00`) : null);
   }
 
   function getDaysSince(dateValue) {
@@ -687,7 +621,7 @@ App.registerModule('inventory', (() => {
     if (result.iso) return formatDisplayDateFromIso(result.iso);
     // Legacy/unparseable values: show raw text for visibility but do not coerce to a date.
     const raw = String(value ?? '').trim();
-    return /^0{1,2}-jan-1900$/i.test(raw) ? '' : raw;
+    return (DATE_UTILS.isPlaceholderDate ? DATE_UTILS.isPlaceholderDate(raw) : /^0{1,2}-jan-1900$/i.test(raw)) ? '' : raw;
   }
 
   function getStatusLabels() {

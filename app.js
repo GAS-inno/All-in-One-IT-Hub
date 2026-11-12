@@ -350,13 +350,23 @@ const FileUpload = {
    DATE HELPERS
    ============================================================ */
 const DateUtil = {
-  today() { return new Date().toISOString().slice(0, 10); },
+  today() { return (window.DateUtils || App.dateUtils)?.todayIso?.() || new Date().toISOString().slice(0, 10); },
   format(dateStr) {
     if (!dateStr) return '—';
+    const du = window.DateUtils || App.dateUtils;
+    if (du?.formatIsoToDisplay) {
+      const formatted = du.formatIsoToDisplay(dateStr);
+      return formatted || '—';
+    }
     return new Date(dateStr).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
   },
   daysBetween(d1, d2) {
-    return Math.round((new Date(d2) - new Date(d1)) / 86400000);
+    const du = window.DateUtils || App.dateUtils;
+    const parse = (v) => (du?.parseDateValue ? du.parseDateValue(v) : new Date(v));
+    const a = parse(d1);
+    const b = parse(d2);
+    if (!a || !b || Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return 0;
+    return Math.round((b - a) / 86400000);
   },
   daysUntil(dateStr) {
     return this.daysBetween(this.today(), dateStr);
@@ -370,7 +380,10 @@ const DateUtil = {
   },
   laptopAge(purchaseDate) {
     if (!purchaseDate) return '—';
-    const years = ((new Date() - new Date(purchaseDate)) / 31536000000).toFixed(1);
+    const du = window.DateUtils || App.dateUtils;
+    const parsed = du?.parseDateValue ? du.parseDateValue(purchaseDate) : new Date(purchaseDate);
+    if (!parsed || Number.isNaN(parsed.getTime())) return '—';
+    const years = ((new Date() - parsed) / 31536000000).toFixed(1);
     return `${years} yrs`;
   },
   weekLabel() {
@@ -378,7 +391,12 @@ const DateUtil = {
     const start = new Date(now);
     start.setDate(now.getDate() - now.getDay() + 1);
     const end = new Date(start); end.setDate(start.getDate() + 6);
-    return `Week of ${start.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} – ${end.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+    const du = window.DateUtils || App.dateUtils;
+    const fmt = (d) => {
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      return du?.formatIsoToDisplay ? du.formatIsoToDisplay(iso) : iso;
+    };
+    return `Week of ${fmt(start)} – ${fmt(end)}`;
   }
 };
 

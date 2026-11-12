@@ -168,26 +168,12 @@ def _status(record: dict[str, Any]) -> str:
 
 
 def _warranty_date(record: dict[str, Any]) -> date | None:
+    """Parse warranty end date using shared date utilities (ISO storage, DD-MMM-YYYY/Excel serials accepted)."""
     value = _text(record, "Warranty End Date", "warrantyEndDate", "do not delete-warrantyEndDate_Dell", "Warranty Expiration Date")
     if not value:
         return None
-    normalized = value.strip()
-    patterns = (
-        "%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y", "%m/%d/%Y %I:%M:%S %p",
-        "%d %b %Y", "%d %B %Y", "%b %d, %Y", "%B %d, %Y",
-        "%d/%m/%Y", "%d-%b-%Y", "%d-%m-%Y",
-    )
-    for pattern in patterns:
-        try:
-            parsed = datetime.strptime(normalized, pattern).date()
-            return parsed if parsed.year >= 2000 else None
-        except ValueError:
-            pass
-    try:
-        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00")).date()
-        return parsed if parsed.year >= 2000 else None
-    except ValueError:
-        return None
+    parsed = _parse_iso_date_shared(value)
+    return parsed if parsed and parsed.year >= 2000 else None
 
 
 def _warranty_status(record: dict[str, Any], today: date) -> str:
@@ -468,13 +454,13 @@ def build_dashboard(
 
 
 def _is_stale(record: dict[str, Any], today: date) -> bool:
+    """Return True when Last check-in is a valid date older than 90 days.
+
+    Uses shared date parsing (ISO, DD-MMM-YYYY, Excel serials; rejects ambiguous slash dates).
+    Missing/placeholder/unparseable values return False to preserve existing behavior.
+    """
     value = _text(record, "Last check-in", "Last Check-In", "Last checkin", "LastSyncDateTime")
-    for pattern in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d %b %Y", "%d-%b-%Y", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return (today - datetime.strptime(value[:19], pattern).date()).days > 90
-        except ValueError:
-            pass
-    try:
-        return (today - datetime.fromisoformat(value.replace("Z", "+00:00")[:25]).date()).days > 90
-    except ValueError:
+    parsed = _parse_iso_date_shared(value)
+    if parsed is None:
         return False
+    return (today - parsed).days > 90

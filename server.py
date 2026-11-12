@@ -25,6 +25,14 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 from constants import CONDITION, DEPLOYMENT_STATUS, DISPOSITION_METHOD, OLD_DEVICE_OUTCOME
 from dashboard_metrics import build_dashboard, filter_options, matching_record_indexes
+from date_utils import (
+    excel_serial_to_iso as _excel_serial_to_iso,
+    format_iso_to_display as iso_to_display_date,
+    normalize_date_field as _normalize_date_field,
+    parse_date_to_iso as normalize_inventory_date,
+    parse_iso_date,
+    require_iso_date,
+)
 
 ROOT = Path(__file__).resolve().parent
 if os.name == "nt":
@@ -62,11 +70,9 @@ ELIGIBLE_HANDOUT_STATUS_NAMES = {
 }
 
 
-DATE_DISPLAY_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-DATE_MONTH_INDEX = {name.lower(): index + 1 for index, name in enumerate(DATE_DISPLAY_MONTHS)}
+
 REMOVED_INTUNE_KEYS = {
     "IntuneGroup.DeviceName",
-    "IntuneGroup.SerialNumber",
     "Intune SerialNumber",
     "IntuneGroup.Model",
     "Intune Group Model",
@@ -75,103 +81,6 @@ REMOVED_INTUNE_KEYS = {
 }
 INTUNE_GROUP_NAME_KEY = "Intune GroupName"
 LEGACY_INTUNE_GROUP_NAME_KEYS = ("IntuneGroup.GroupName", "Intune.GroupName", "IntuneGroup GroupName")
-
-
-def _is_valid_calendar_date(year: int, month: int, day: int) -> bool:
-    try:
-        datetime(year, month, day)
-    except ValueError:
-        return False
-    return True
-
-
-def _excel_serial_to_iso(value: str) -> str | None:
-    text = str(value or "").strip()
-    if not re.fullmatch(r"\d+(?:\.0+)?", text):
-        return None
-    serial = float(text)
-    if serial <= 0 or serial > 2958465:
-        return None
-    # Excel 1900 date system with 1899-12-30 epoch (accounts for Excel 1900 leap-year bug)
-    days = int(round(serial))
-    base = datetime(1899, 12, 30)
-    try:
-        date = base.fromordinal(base.toordinal() + days)
-    except (OverflowError, ValueError):
-        return None
-    return date.strftime("%Y-%m-%d")
-
-
-def normalize_inventory_date(value: Any, *, strict: bool = True) -> tuple[str, str]:
-    """Return (iso_yyyy_mm_dd_or_empty, error_message_or_empty).
-
-    Accepts DD-MMM-YYYY, YYYY-MM-DD, and Excel serial numbers. Rejects ambiguous
-    slash dates (e.g. 01/02/2024) when strict=True. Sentinel and placeholder
-    missing values (including "not found", "null", and empty/whitespace) are blank.
-    """
-    raw = str(value or "").strip()
-    if not raw:
-        return "", ""
-    raw_fold = raw.casefold()
-    if raw_fold in {"00-jan-1900", "0-jan-1900", "not found", "null", "none", "n/a", "na", "unknown", "-"}:
-        return "", ""
-
-    display = re.fullmatch(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})", raw)
-    if display:
-        day = int(display.group(1))
-        month = DATE_MONTH_INDEX.get(display.group(2).casefold())
-        year = int(display.group(3))
-        if month and _is_valid_calendar_date(year, month, day):
-            return f"{year:04d}-{month:02d}-{day:02d}", ""
-        return "", f"Invalid date \"{raw}\". Use DD-MMM-YYYY (e.g. 05-Dec-2021)."
-
-    iso = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", raw)
-    if iso:
-        year = int(iso.group(1))
-        month = int(iso.group(2))
-        day = int(iso.group(3))
-        if _is_valid_calendar_date(year, month, day):
-            return f"{year:04d}-{month:02d}-{day:02d}", ""
-        return "", f"Invalid date \"{raw}\". Use YYYY-MM-DD or DD-MMM-YYYY."
-
-    slash = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})", raw)
-    if slash:
-        first = int(slash.group(1))
-        second = int(slash.group(2))
-        year = int(slash.group(3))
-        if first > 12 and second <= 12:
-            day, month = first, second
-        elif second > 12 and first <= 12:
-            day, month = second, first
-        elif strict:
-            return "", f"Ambiguous date \"{raw}\". Use DD-MMM-YYYY or YYYY-MM-DD instead of guessing."
-        else:
-            day, month = first, second
-        if _is_valid_calendar_date(year, month, day):
-            return f"{year:04d}-{month:02d}-{day:02d}", ""
-        return "", f"Invalid date \"{raw}\"."
-
-    excel_iso = _excel_serial_to_iso(raw)
-    if excel_iso:
-        return excel_iso, ""
-
-    if strict:
-        return "", f"Invalid date format \"{raw}\". Use DD-MMM-YYYY or YYYY-MM-DD."
-    return "", ""
-
-
-def iso_to_display_date(value: Any) -> str:
-    iso, _error = normalize_inventory_date(value, strict=False)
-    if not iso:
-        raw = str(value or "").strip()
-        match = re.fullmatch(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})", raw)
-        if match:
-            month = DATE_MONTH_INDEX.get(match.group(2).casefold())
-            if month:
-                return f"{int(match.group(1)):02d}-{DATE_DISPLAY_MONTHS[month - 1]}-{int(match.group(3)):04d}"
-        return ""
-    year, month, day = iso.split("-")
-    return f"{day}-{DATE_DISPLAY_MONTHS[int(month) - 1]}-{year}"
 
 
 def normalize_inventory_record_keys(record: dict[str, Any]) -> dict[str, Any]:
@@ -817,26 +726,7 @@ def _validate_device_status(record: dict[str, Any]) -> None:
 
 def _normalize_inventory_date_field(record: dict[str, Any], *keys: str, strict: bool = True) -> str:
     """Normalize the first present/non-empty date among keys to ISO YYYY-MM-DD and store back to canonical key."""
-    canonical = keys[0]
-    raw = ""
-    for key in keys:
-        if key in record and str(record.get(key) or "").strip() != "":
-            raw = str(record.get(key) or "").strip()
-            break
-    if not raw:
-        # ensure canonical key is blank string if explicitly present as empty-like? keep absent unless present
-        if any(key in record for key in keys):
-            record[canonical] = ""
-        for key in keys[1:]:
-            record.pop(key, None)
-        return ""
-    iso, error = normalize_inventory_date(raw, strict=strict)
-    if error:
-        raise ValueError(f"{canonical}: {error}")
-    record[canonical] = iso
-    for key in keys[1:]:
-        record.pop(key, None)
-    return iso
+    return _normalize_date_field(record, *keys, strict=strict, canonical=keys[0] if keys else None)
 
 
 def _replace_inventory(connection: sqlite3.Connection, devices: list[dict[str, Any]]) -> None:
@@ -1034,9 +924,9 @@ def _replace_checkout_history(connection: sqlite3.Connection, records: list[dict
         event_id = _as_text(record, "Event ID").strip()
         asset_key = _as_text(record, "Asset key").strip()
         event_type = _as_text(record, "Event type").strip().casefold()
-        event_date = _as_text(record, "Event date").strip()
+        event_date_raw = _as_text(record, "Event date").strip()
         staff_name = _as_text(record, "Staff name").strip()
-        if not event_id or not asset_key or not event_date or not staff_name:
+        if not event_id or not asset_key or not event_date_raw or not staff_name:
             raise ValueError("Every checkout event must include an Event ID, Asset key, Event date, and Staff name.")
         if event_type not in {"checkout", "checkin"}:
             raise ValueError("Checkout event type must be checkout or checkin.")
@@ -1048,16 +938,16 @@ def _replace_checkout_history(connection: sqlite3.Connection, records: list[dict
             identity = f"device:{device_id}"
         else:
             identity = asset_key.casefold()
-        try:
-            parsed_date = datetime.strptime(event_date, "%Y-%m-%d").date()
-        except ValueError as error:
-            raise ValueError("Checkout event date must use YYYY-MM-DD format.") from error
-        expected_return = _as_text(record, "Expected return date").strip()
+        event_date = require_iso_date(event_date_raw, "Event date")
+        if not event_date:
+            raise ValueError("Event date: A valid date is required. Use DD-MMM-YYYY or YYYY-MM-DD.")
+        parsed_date = datetime.strptime(event_date, "%Y-%m-%d").date()
+        record["Event date"] = event_date
+        expected_return_raw = _as_text(record, "Expected return date").strip()
+        expected_return = require_iso_date(expected_return_raw, "Expected return date") if expected_return_raw else ""
+        record["Expected return date"] = expected_return
         if expected_return:
-            try:
-                expected_date = datetime.strptime(expected_return, "%Y-%m-%d").date()
-            except ValueError as error:
-                raise ValueError("Expected return date must use YYYY-MM-DD format.") from error
+            expected_date = datetime.strptime(expected_return, "%Y-%m-%d").date()
             if event_type == "checkout" and expected_date < parsed_date:
                 raise ValueError("Expected return date cannot be before the checkout date.")
         normalized_id = event_id.casefold()
@@ -1393,10 +1283,10 @@ def _save_replacement_record(connection: sqlite3.Connection, payload: Any) -> in
         raise ValueError("Replacement ID and replacement device are required.")
     if old_serial and _serial_key(old_serial) == _serial_key(new_serial):
         raise ValueError("A device cannot replace itself.")
-    try:
-        datetime.strptime(_as_text(record, "Replacement Date"), "%Y-%m-%d")
-    except ValueError as error:
-        raise ValueError("Replacement Date must use YYYY-MM-DD format.") from error
+    replacement_date = require_iso_date(_as_text(record, "Replacement Date"), "Replacement Date")
+    if not replacement_date:
+        raise ValueError("Replacement Date: A valid date is required. Use DD-MMM-YYYY or YYYY-MM-DD.")
+    record["Replacement Date"] = replacement_date
 
     records = _read_replacement_history(connection)
     existing_index = next((index for index, item in enumerate(records)

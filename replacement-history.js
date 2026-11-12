@@ -53,14 +53,20 @@ App.registerModule('replacements', (() => {
   }
 
   function localToday() {
-    const today = new Date();
-    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    return (window.DateUtils || App.dateUtils)?.todayIso?.() || new Date().toISOString().slice(0, 10);
+  }
+
+  function parseReplacementDate(value) {
+    const du = window.DateUtils || App.dateUtils;
+    if (du?.parseDateToIso) return du.parseDateToIso(value, { strict: true });
+    const raw = String(value || '').trim();
+    if (!raw) return { iso: '', error: '' };
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return { iso: raw, error: '' };
+    return { iso: '', error: `Invalid date format "${raw}". Use DD-MMM-YYYY or YYYY-MM-DD.` };
   }
 
   function validDate(value) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-    const date = new Date(`${value}T00:00:00Z`);
-    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+    return Boolean(parseReplacementDate(value).iso);
   }
 
   function inventoryRows() {
@@ -123,6 +129,11 @@ App.registerModule('replacements', (() => {
     return String(value || '').replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
   }
 
+  function formatReplacementDate(value) {
+    const du = window.DateUtils || App.dateUtils;
+    return du?.formatIsoToDisplay ? du.formatIsoToDisplay(value) : String(value || '');
+  }
+
   function validateRecord(record, { requireStaffEmail = false, allowMissingOldDevice = false } = {}) {
     const normalized = {
       ...record,
@@ -137,6 +148,8 @@ App.registerModule('replacements', (() => {
       'old_device_outcome': String(record['old_device_outcome'] || '').trim(),
       Remarks: String(record.Remarks || '').trim()
     };
+    const dateResult = parseReplacementDate(normalized['Replacement Date']);
+    if (dateResult.iso) normalized['Replacement Date'] = dateResult.iso;
     const errors = [];
     if (!normalized['Replacement ID']) errors.push('Replacement ID is required.');
     if (!normalized['Staff Member Name']) errors.push('Staff Member Name is required.');
@@ -146,7 +159,7 @@ App.registerModule('replacements', (() => {
     if (normalized['Old Device Serial Number'] && serialKey(normalized['Old Device Serial Number']) === serialKey(normalized['New Device Serial Number'])) {
       errors.push('Old and new device serial numbers must be different.');
     }
-    if (!validDate(normalized['Replacement Date'])) errors.push('Replacement Date must be a valid YYYY-MM-DD date.');
+    if (!dateResult.iso) errors.push(dateResult.error ? `Replacement Date: ${dateResult.error}` : 'Replacement Date is required. Use DD-MMM-YYYY or YYYY-MM-DD.');
     if (!REASONS.includes(normalized['Replacement Reason'])) errors.push('Select a valid Replacement Reason.');
     if (normalized['Old Device Condition'] && !CONDITIONS.includes(normalized['Old Device Condition'])) {
       errors.push('Select a valid Old Device Condition.');
@@ -189,8 +202,13 @@ App.registerModule('replacements', (() => {
   }
 
   function downloadCsv(rows, filename) {
+    const du = window.DateUtils || App.dateUtils;
+    const displayDate = (value) => (du?.formatIsoToDisplay ? du.formatIsoToDisplay(value) : String(value || ''));
     const csv = [COLUMNS.map(csvCell).join(',')]
-      .concat(rows.map((record) => COLUMNS.map((column) => csvCell(record[column])).join(',')))
+      .concat(rows.map((record) => COLUMNS.map((column) => {
+        const value = record[column] ?? '';
+        return csvCell(column === 'Replacement Date' ? displayDate(value) : value);
+      }).join(',')))
       .join('\r\n');
     const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' }));
     const anchor = document.createElement('a');
@@ -308,7 +326,7 @@ App.registerModule('replacements', (() => {
         <td>${escapeHtml(record['Staff Member Name'])}</td>
         <td><span class="replacement-device-name">${oldName ? escapeHtml(oldName) : '<span class="replacement-missing">Not found in current inventory</span>'}</span><small class="replacement-device-serial">${escapeHtml(record['Old Device Serial Number'])}</small></td>
         <td><span class="replacement-device-name">${newName ? escapeHtml(newName) : '<span class="replacement-missing">Not found in current inventory</span>'}</span><small class="replacement-device-serial">${escapeHtml(record['New Device Serial Number'])}</small></td>
-        <td>${escapeHtml(record['Replacement Date'])}</td>
+        <td>${escapeHtml(formatReplacementDate(record['Replacement Date']))}</td>
         <td>${escapeHtml(record['Replacement Reason'])}</td>
         <td>${statusBadge(record['old_device_outcome'])}</td>
         <td class="replacement-actions">

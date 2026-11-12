@@ -1,6 +1,6 @@
 # Project Brief
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-14
 
 ## Purpose
 
@@ -12,6 +12,7 @@ NexIT is a local/internal IT asset management app for inventory, warranty, staff
 - Theming: CSS custom properties on `:root` with `[data-theme="dark"]` overrides (light/dark), `color-scheme` for native controls/scrollbars, a pre-paint inline `<head>` script in `index.html` to avoid flash, global theme toggle next to **More tools** (persisted in `localStorage`, respects `prefers-color-scheme` on first load), and `nexit:themechange` events so dashboard charts re-read theme tokens.
 - Backend: Python standard library (`http.server`, `sqlite3`); no external Python packages.
 - Storage: SQLite database at the platform's local application-data directory. `server.py` prints the active path and `/api/health` reports it.
+- Date handling: centralized in shared utilities `date_utils.py` (server/API/migrations) and `date-utils.js` (UI/CSV). Internal storage is ISO `YYYY-MM-DD`; UI/CSV display is `DD-MMM-YYYY`. Accepted inputs are `DD-MMM-YYYY`, `YYYY-MM-DD`, and Excel serials (1899-12-30 epoch). Ambiguous numeric slash dates are rejected; placeholders (`not found`, `null`, blank/sentinels) are treated as empty. HTML `<input type="date">` controls use native `YYYY-MM-DD` entry values.
 - Authentication/RBAC: server-side HttpOnly session cookie (`nexit_session`), PBKDF2-SHA256 password hashes, 30-minute inactivity auto-logout (sliding) with absolute session cap, login rate limiting/lockout, and role checks (`admin`, `member`). No public signup; initial admin is seeded via `seed_admin.py`. `/api/health` is public; other `/api/*` routes require authentication, with admin-only enforcement for Clean Database, Restore Database, and login-account management.
 - Dashboard charts use Chart.js from jsDelivr; internet access is needed for those charts. Chart colors/options are derived from theme CSS variables and refreshed on theme toggle.
 - Global app shell: **More tools** in the topbar is persistent across pages with role-aware actions (**Backup Database**, **Restore Database** admin-only, **Clean Database** admin-only, **Export CSV**, **Import CSV**, **Download CSV template**), plus **Theme** and **Logout**. Import/export use source-aware choosers and reuse module handlers.
@@ -41,7 +42,7 @@ NexIT is a local/internal IT asset management app for inventory, warranty, staff
 - Raw Intune `Total storage` may be imported as bytes and converted to `Total storage (GB)`. Only the GB field is retained and presented.
 - **Intune GroupName standardization:** the canonical stored/UI/API key is `Intune GroupName` (space). Legacy aliases `IntuneGroup.GroupName`, `Intune.GroupName`, and `IntuneGroup GroupName` are read/migrated for compatibility; the extracted DB column remains `group_name` (kept in sync). Intune Group Tag remains supported (`Intune Group Tag`, with legacy dotted/tag variants normalized).
 - **Removed Intune fields (Part 2):** `Intune Group Device Name`/`IntuneGroup.DeviceName`, `Intune SerialNumber`/`IntuneGroup.SerialNumber`, `Intune Group Model`/`IntuneGroup.Model`, and `Intune Group Manufacturer`/`IntuneGroup.Manufacturer` are removed from schema/UI/templates/import/export. These fields were JSON-only (no dedicated columns); imports may flag/ignore legacy headers without crashing, and canonical writes drop them. No in-repo Intune sync writer was present; keep a backup before destructive/cleanup operations.
-- **Date standard:** Purchase Date, Warranty Start Date, Warranty End Date, and Disposal Date are stored as ISO `YYYY-MM-DD` (or NULL/blank where empty), displayed/exported as `DD-MMM-YYYY`, and accepted on import as `DD-MMM-YYYY`, `YYYY-MM-DD`, or Excel serials (1899-12-30 epoch). Ambiguous slash dates are rejected; sentinel `00-Jan-1900` is treated as empty. Existing Excel-serial/sentinel warranty data cleanup is a separate, approval-gated migration/report item (row counts must be gathered from the real DB; not executed here).
+- **Date standard:** Date fields (inventory/warranty purchase/warranty/disposal, checkout/check-in event/expected-return dates, replacement dates, and parsed date metrics such as Last check-in/warranty evaluation) are stored/normalized as ISO `YYYY-MM-DD` (or blank/NULL-equivalent per schema) and displayed/exported as `DD-MMM-YYYY`. Accepted inputs are `DD-MMM-YYYY`, `YYYY-MM-DD`, and Excel serials (1899-12-30 epoch). Ambiguous numeric slash dates are rejected; placeholders/sentinels (`not found`, `null`, empty/whitespace, `00-Jan-1900`) are treated as empty. Parsing/validation/formatting is centralized in `date_utils.py` and `date-utils.js`. Legacy cleanup is available via `migrations/migrate_standardize_dates.py` (dry-run/apply with backup).
 - **Purchase/Disposal dates (Part 1, Option A):** `inventory_devices` includes nullable `purchase_date` and `disposal_date` (TEXT) near warranty columns via safe table recreate migration; values are also carried in `data_json` as ISO.
 - **Templates:** Asset Inventory and User DB CSV templates are generated programmatically from a shared source of truth aligned with importer definitions, UTF-8 with BOM, one example row (DD-MMM-YYYY, YES/NO), and Excel `Data → From Text/CSV` / Text-column guidance. Asset template includes Purchase/Disposal Date and excludes computed/system-managed columns (Age, Device Online Status, Warranty Match Status, Duplicate Serial, UI actions, internal IDs/positions) and the four removed Intune fields. User template headers are `USER ID, NAME, STAFF TYPE, EMAIL, ACCOUNT ACTIVE, COUNTRY, LOCATION` (excludes derived `ASSIGNED ASSETS`).
 
@@ -59,16 +60,18 @@ NexIT is a local/internal IT asset management app for inventory, warranty, staff
 | File | Responsibility |
 |---|---|
 | `index.html` | Page shell, navigation, login overlay, global More tools/theme toggle/logout, pre-paint theme bootstrap, and script loading |
+| `date-utils.js`, `date_utils.py` | Shared date parsing/validation/formatting (ISO storage, DD-MMM-YYYY UI/CSV; accepts DD-MMM-YYYY/YYYY-MM-DD/Excel serials; rejects ambiguous slash dates) |
 | `app.js` | App state, auth client/gating, API-backed store, navigation, dialogs, shared helpers, global More tools routing, role-aware UI, theme persistence/toggle, and admin login-account management module |
 | `constants.js`, `constants.py` | Shared deployment status, condition, disposition-method, and badge-colour lists (kept in sync) |
 | `inventory.js` | Inventory UI, filter drawer, import/export flows, structured device forms, staff autocomplete, checkout/check-in history, status labels, reusable backup/restore/clean handlers |
 | `users.js` | Staff directory, user CSV import/export flows, and per-user assigned assets |
 | `replacement-history.js` | Replacement history UI, linked autocomplete, CSV transfer |
 | `dashboard.js` | Dashboard filters, charts, inventory drill-through; derives chart colors/options from theme tokens and refreshes on `nexit:themechange` |
-| `server.py` | HTTP API, SQLite persistence, auth/RBAC/session/rate-limit enforcement, status-field validations, backup/restore |
+| `server.py` | HTTP API, SQLite persistence, auth/RBAC/session/rate-limit enforcement, date/status-field validations, backup/restore |
 | `seed_admin.py` | One-time/maintenance script to create or reset the initial admin login account |
-| `dashboard_metrics.py` | Dashboard calculations and filtering |
+| `dashboard_metrics.py` | Dashboard calculations and filtering (shared date parsing for warranty/last check-in staleness) |
 | `migrations/migrate_inventory_status_json.py` | One-time, idempotent status/condition/archive migration and logging |
+| `migrations/migrate_standardize_dates.py` | One-time/idempotent date standardization and cleanup migration (placeholders, Excel serials) |
 | `test_server.py`, `test_dashboard_metrics.py`, `test_status_validation.py` | Automated tests |
 | `main.css` | Shared styles and theme tokens (`:root` light/dark variables, `color-scheme`, component/surface styling), including auth/login UI |
 
@@ -82,9 +85,9 @@ NexIT is a local/internal IT asset management app for inventory, warranty, staff
 - `POST /api/checkin-primary-user`: clear a Primary user assignment and append a check-in event.
 - `GET /api/field-options` and `POST /api/field-options`: read and add canonical/legacy field values.
 - `GET /api/health`: report server/database health (unauthenticated).
-- `POST /api/replacement-history/save`: validate and save a replacement event and its new device assignment atomically.
+- `POST /api/replacement-history/save`: validate and save a replacement event and its new device assignment atomically (replacement/event dates parsed via shared date utilities and stored as ISO).
 - `GET /api/dashboard` and `/api/dashboard/records`: dashboard metrics and drill-through rows.
-- Dataset APIs: `PUT /api/inventory` (validates deployment status, condition, disposition method, and `is_archived`), `/api/warranty`, `/api/replacement-history`, `/api/checkout-history`, `/api/users` (staff directory; Name optional, User ID required), `/api/status-labels`, `POST /api/users/staff-type` (set a single user's staff type as a manual override with server-side validation and commit), and `POST /api/users/staff-type/reset` (clear a manual staff-type override and recompute from the user name).
+- Dataset APIs: `PUT /api/inventory` (validates deployment status, condition, disposition method, and `is_archived`; normalizes date fields to ISO), `/api/warranty`, `/api/replacement-history`, `/api/checkout-history` (event/expected-return dates normalized to ISO), `/api/users` (staff directory; Name optional, User ID required), `/api/status-labels`, `POST /api/users/staff-type` (set a single user's staff type as a manual override with server-side validation and commit), and `POST /api/users/staff-type/reset` (clear a manual staff-type override and recompute from the user name).
 - `GET /api/backup` and `POST /api/restore` (admin-only): consistent SQLite backup and validated restore. `POST /api/clean-database` (admin-only): clears application data while preserving auth tables.
 
 ## Maintenance notes
