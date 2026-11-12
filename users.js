@@ -42,6 +42,11 @@ App.registerModule('users', (() => {
     }[char]));
   }
 
+  function escapeCsv(value) {
+    const text = value == null ? '' : String(value);
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+
   function normalize(value) {
     return String(value || '').trim().toLowerCase();
   }
@@ -451,6 +456,97 @@ App.registerModule('users', (() => {
     return { merged, added, updated, skipped };
   }
 
+  function getFilteredUsersList() {
+    const allUsers = getUsers();
+    let users = userSearch.trim()
+      ? allUsers.filter((user) => {
+        const needle = userSearch.trim().toLowerCase();
+        const name = String(user.name || '').toLowerCase();
+        const email = String(user.email || '').toLowerCase();
+        return name.includes(needle) || email.includes(needle);
+      })
+      : allUsers;
+    const parsedAssetCount = Number(userAssetCountFilter);
+    let filteredUsers = userAssetCountFilter.trim() === '' || !Number.isFinite(parsedAssetCount)
+      ? users
+      : users.filter((user) => user.assets.length === parsedAssetCount);
+    if (userStaffTypeFilter && userStaffTypeFilter !== 'all') {
+      filteredUsers = filteredUsers.filter((user) => {
+        const effectiveStaffType = String(user.staffType || '') || null;
+        const wanted = userStaffTypeFilter === '' ? null : userStaffTypeFilter;
+        return wanted === null ? !effectiveStaffType : effectiveStaffType === wanted;
+      });
+    }
+    if (userFilterUserId.trim()) {
+      const needle = userFilterUserId.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter((user) => String(user.id || '').toLowerCase().includes(needle));
+    }
+    if (userFilterName.trim()) {
+      const needle = userFilterName.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter((user) => String(user.name || '').toLowerCase().includes(needle));
+    }
+    if (userFilterEmail.trim()) {
+      const needle = userFilterEmail.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter((user) => String(user.email || '').toLowerCase().includes(needle));
+    }
+    if (userFilterLocation.trim()) {
+      const needle = userFilterLocation.trim().toLowerCase();
+      filteredUsers = filteredUsers.filter((user) => String(user.location || '').toLowerCase().includes(needle));
+    }
+    if (userFilterAccountActive) {
+      filteredUsers = filteredUsers.filter((user) => String(user.accountActive || 'YES').toUpperCase() === userFilterAccountActive);
+    }
+    if (userFilterHasAssets) {
+      filteredUsers = filteredUsers.filter((user) => user.assets.length > 0);
+    }
+    return filteredUsers;
+  }
+
+  function exportUsersCsv(includeAllColumns = false) {
+    const filteredUsers = getFilteredUsersList();
+    const activeColumns = [
+      { key: 'USER ID', get: (u) => u.id || '' },
+      { key: 'NAME', get: (u) => u.name || '' },
+      { key: 'STAFF TYPE', get: (u) => u.staffType || 'Unclassified' },
+      { key: 'EMAIL', get: (u) => u.email || '' },
+      { key: 'ACCOUNT ACTIVE', get: (u) => u.accountActive || 'YES' },
+      { key: 'COUNTRY', get: (u) => u.country || '' },
+      { key: 'LOCATION', get: (u) => u.location || '' },
+      { key: 'ASSIGNED ASSETS', get: (u) => u.assets.length }
+    ];
+    const allColumns = [
+      ...activeColumns,
+      { key: 'STAFF TYPE SOURCE', get: (u) => u.staffTypeSource || 'auto' }
+    ];
+    const columns = includeAllColumns ? allColumns : activeColumns;
+    const csvRows = [columns.map((col) => escapeCsv(col.key)).join(',')].concat(
+      filteredUsers.map((user) => columns.map((col) => escapeCsv(col.get(user))).join(','))
+    );
+    const blob = new Blob([`\uFEFF${csvRows.join('\r\n')}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'IT-Users-' + new Date().toISOString().slice(0, 10) + '.csv';
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    Toast.show(`Exported ${filteredUsers.length} user${filteredUsers.length === 1 ? '' : 's'}.`, 'success');
+  }
+
+  function promptUsersExport() {
+    Modal.open({
+      title: 'Export users CSV',
+      confirmText: 'Export CSV',
+      body: `<p>Choose which columns to include. The current search and filters determine which users are exported.</p>
+        <label class="duplicate-choice"><input type="radio" name="usersExportColumns" value="active" checked> Active columns (currently shown)</label>
+        <label class="duplicate-choice"><input type="radio" name="usersExportColumns" value="all"> All columns</label>`,
+      onConfirm: () => {
+        const all = document.querySelector('input[name="usersExportColumns"]:checked')?.value === 'all';
+        Modal.close();
+        exportUsersCsv(all);
+      }
+    });
+  }
+
   function render(container, country = 'all') {
     countryFilter = country;
     const allUsers = getUsers();
@@ -533,6 +629,7 @@ App.registerModule('users', (() => {
           <button class="btn btn-primary btn-sm" id="addUserBtn">+ Add user</button>
           <button class="btn btn-secondary btn-sm" id="usersFilterToggle" aria-expanded="${userFilterPanelOpen}">Filter</button>
           <button class="btn btn-secondary btn-sm" id="importUsersBtn">Import users CSV</button>
+          <button class="btn btn-secondary btn-sm" id="exportUsersBtn">Export CSV</button>
           <div class="user-selection-actions" aria-label="Selected user actions">
             <button class="btn btn-secondary btn-sm" id="editUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Edit selected</button>
             <button class="btn btn-danger btn-sm" id="deleteUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Delete selected</button>
@@ -604,6 +701,7 @@ App.registerModule('users', (() => {
       </div>
     `;
     container.querySelector('#addUserBtn').addEventListener('click', () => openUserForm(container));
+    container.querySelector('#exportUsersBtn').addEventListener('click', () => promptUsersExport());
     const input = container.querySelector('#usersFileInput');
     container.querySelector('#importUsersBtn').addEventListener('click', () => input.click());
     input.addEventListener('change', async (event) => {
