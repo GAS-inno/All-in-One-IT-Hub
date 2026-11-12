@@ -106,12 +106,14 @@ def normalize_inventory_date(value: Any, *, strict: bool = True) -> tuple[str, s
     """Return (iso_yyyy_mm_dd_or_empty, error_message_or_empty).
 
     Accepts DD-MMM-YYYY, YYYY-MM-DD, and Excel serial numbers. Rejects ambiguous
-    slash dates (e.g. 01/02/2024) when strict=True. Sentinel 00-Jan-1900 becomes blank.
+    slash dates (e.g. 01/02/2024) when strict=True. Sentinel and placeholder
+    missing values (including "not found", "null", and empty/whitespace) are blank.
     """
     raw = str(value or "").strip()
     if not raw:
         return "", ""
-    if raw.casefold() in {"00-jan-1900", "0-jan-1900"}:
+    raw_fold = raw.casefold()
+    if raw_fold in {"00-jan-1900", "0-jan-1900", "not found", "null", "none", "n/a", "na", "unknown", "-"}:
         return "", ""
 
     display = re.fullmatch(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})", raw)
@@ -154,7 +156,7 @@ def normalize_inventory_date(value: Any, *, strict: bool = True) -> tuple[str, s
         return excel_iso, ""
 
     if strict:
-        return "", f"Unsupported date format \"{raw}\". Use DD-MMM-YYYY or YYYY-MM-DD."
+        return "", f"Invalid date format \"{raw}\". Use DD-MMM-YYYY or YYYY-MM-DD."
     return "", ""
 
 
