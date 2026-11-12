@@ -1259,13 +1259,13 @@ App.registerModule('inventory', (() => {
             : getInventoryField(device, column))).join(','))
     );
 
-    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob([`\uFEFF${csvRows.join('\r\n')}`], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = 'IT-Asset-Inventory-' + new Date().toISOString().slice(0, 10) + '.csv';
     anchor.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
     Toast.show('Inventory export generated.', 'success');
   }
 
@@ -1282,6 +1282,86 @@ App.registerModule('inventory', (() => {
         exportCurrentInventory(all);
       }
     });
+  }
+
+  async function importInventoryCsvFile(file, context = {}) {
+    if (!file) return;
+    const container = context.container || document.getElementById('moduleContainer');
+    const country = context.country ?? App.countryFilter;
+    try {
+      const { rows: imported, validation: inventoryValidation } = parseInventoryCsv(await file.text());
+      const duplicateCount = countImportDuplicates(getInventory(), imported);
+      let importRows = imported;
+      let selectedRecognizedColumns = inventoryValidation.recognized;
+      const saveImport = (keepDuplicates) => {
+        try {
+          const result = applyInventoryImport(importRows, keepDuplicates);
+          selectedDeviceIndexes.clear();
+          Modal.close();
+          if (App.currentModule === 'inventory' && container) render(container, country);
+          const parts = [`${result.added} added`, `${result.merged} merged`];
+          if (result.duplicatesKept) parts.push(`${result.duplicatesKept} duplicate${result.duplicatesKept === 1 ? '' : 's'} kept`);
+
+          const selectedSet = new Set(selectedRecognizedColumns);
+          const ignoredRecognized = inventoryValidation.recognized.filter((col) => !selectedSet.has(col));
+          const ignoredAll = [...inventoryValidation.unrecognized, ...ignoredRecognized];
+          if (ignoredAll.length) {
+            const ignoredLabels = ignoredAll.map((col) => IMPORT_COLUMN_LABELS[col] || col).join(', ');
+            console.log(`[CSV Import] Columns present but ignored: ${ignoredLabels}`);
+            parts.push(`${ignoredAll.length} column${ignoredAll.length === 1 ? '' : 's'} present but not imported: ${ignoredLabels}`);
+          }
+
+          Modal.open({
+            title: 'Inventory Import Report',
+            body: renderImportReport({
+              title: 'Inventory Import Report',
+              summaryLines: parts,
+              recognizedColumns: selectedRecognizedColumns.map((column) => IMPORT_COLUMN_LABELS[column] || column),
+              unrecognizedColumns: inventoryValidation.unrecognized
+            }),
+            onConfirm: () => Modal.close(),
+            confirmText: 'Close',
+            size: 'lg'
+          });
+        } catch (error) {
+          Modal.close();
+          Toast.show(`CSV import could not be saved: ${error.message || error}`, 'error');
+        }
+      };
+      const reviewDuplicates = () => {
+        if (!duplicateCount) {
+          saveImport(false);
+          return;
+        }
+        Modal.open({
+          title: 'Duplicate serial numbers found',
+          confirmText: 'Continue import',
+          body: `<p>${duplicateCount} duplicate serial-number record${duplicateCount === 1 ? '' : 's'} found. Choose how to handle them:</p>
+            <label class="duplicate-choice"><input type="radio" name="duplicateImportMode" value="merge" checked> Merge into the existing device record</label>
+            <label class="duplicate-choice"><input type="radio" name="duplicateImportMode" value="keep"> Keep each as a separate device (append -1, -2, etc.)</label>`,
+          onConfirm: () => saveImport(document.querySelector('input[name="duplicateImportMode"]:checked')?.value === 'keep')
+        });
+      };
+      Modal.open({
+        title: 'Review inventory CSV columns',
+        confirmText: 'Proceed to import',
+        body: `<p>All recognized columns are selected by default. Uncheck optional columns you do not want to import.</p>${renderImportReport({
+          title: `${imported.length} device row${imported.length === 1 ? '' : 's'} ready for review`,
+          selectableColumns: inventoryValidation.recognized.map((column) => ({ key: column, label: IMPORT_COLUMN_LABELS[column] || column })),
+          unrecognizedColumns: inventoryValidation.unrecognized
+        })}`,
+        onConfirm: () => {
+          const checked = Array.from(document.querySelectorAll('#modalBody input[data-import-column]:checked'));
+          selectedRecognizedColumns = checked.map((input) => input.dataset.importColumn);
+          importRows = imported.map((record) => selectedImportRecord(record, selectedRecognizedColumns));
+          Modal.close();
+          reviewDuplicates();
+        },
+        size: 'lg'
+      });
+    } catch (error) {
+      Toast.show(error.message || 'CSV import failed.', 'error');
+    }
   }
 
   function downloadCsvTemplateFile(filename, headerRow, sampleRow) {
@@ -2656,7 +2736,6 @@ App.registerModule('inventory', (() => {
             <button class="btn btn-secondary btn-sm" id="undoInventoryBtn" ${history.undo.length ? '' : 'disabled'}>Undo</button>
             <button class="btn btn-secondary btn-sm" id="redoInventoryBtn" ${history.redo.length ? '' : 'disabled'}>Redo</button>
           </div>
-          <div id="inventorySettingsHost"></div>
         </div>
       </div>
 
@@ -2672,10 +2751,6 @@ App.registerModule('inventory', (() => {
 
       ${renderLayoutControls()}
 
-      <input id="inventoryFileInput" type="file" accept=".csv,text/csv" hidden />
-      <input id="warrantyFileInput" type="file" accept=".csv,text/csv" hidden />
-      <input id="databaseBackupInput" type="file" accept=".db,.sqlite,.sqlite3,application/vnd.sqlite3" hidden />
-
       <div class="card inventory-table-wrap">
         <table class="inventory-table">
           <colgroup><col />${orderedColumns.map((column) => `<col data-layout-column="${escapeHtml(column)}" ${visibleColumns.includes(column) ? '' : 'class="column-hidden"'} />`).join('')}<col /></colgroup>
@@ -2686,22 +2761,6 @@ App.registerModule('inventory', (() => {
     `;
 
     decorateTableColumns(container);
-
-    const settingsHost = document.getElementById('inventorySettingsHost');
-    settingsHost.innerHTML = `
-      <details class="inventory-settings-dropdown">
-        <summary class="btn btn-secondary btn-sm" aria-label="More tools">More tools</summary>
-        <div class="inventory-settings-menu" aria-label="More inventory tools">
-          <button type="button" class="inventory-settings-action" id="backupDatabaseBtn">Backup Database</button>
-          <button type="button" class="inventory-settings-action" id="restoreDatabaseBtn">Restore Database</button>
-          <button type="button" class="inventory-settings-action" id="clearDatabaseBtn">Clean database</button>
-          <button type="button" class="inventory-settings-action" id="exportInventoryBtn">Export CSV</button>
-          <button type="button" class="inventory-settings-action" id="importWarrantyBtn">Import Warranty</button>
-          <button type="button" class="inventory-settings-action" id="importInventoryBtn">Import CSV</button>
-        </div>
-      </details>
-    `;
-    const settingsDropdown = settingsHost.querySelector('.inventory-settings-dropdown');
 
     const searchInput = container.querySelector('#inventorySearch');
     searchInput.addEventListener('input', () => {
@@ -2778,30 +2837,6 @@ App.registerModule('inventory', (() => {
       }
     });
     container.querySelector('#addDeviceBtn').addEventListener('click', () => openDeviceForm(container, country));
-    settingsHost.querySelector('#importInventoryBtn').addEventListener('click', () => {
-      settingsDropdown.open = false;
-      const input = document.getElementById('inventoryFileInput');
-      input.value = '';
-      input.click();
-    });
-    settingsHost.querySelector('#exportInventoryBtn').addEventListener('click', () => {
-      settingsDropdown.open = false;
-      promptInventoryExport();
-    });
-    settingsHost.querySelector('#backupDatabaseBtn').addEventListener('click', () => {
-      settingsDropdown.open = false;
-      downloadDatabaseBackup();
-    });
-    settingsHost.querySelector('#restoreDatabaseBtn').addEventListener('click', () => {
-      settingsDropdown.open = false;
-      const input = container.querySelector('#databaseBackupInput');
-      input.value = '';
-      input.click();
-    });
-    settingsHost.querySelector('#clearDatabaseBtn').addEventListener('click', () => confirmClearDatabase());
-    container.querySelector('#databaseBackupInput').addEventListener('change', (event) => {
-      confirmDatabaseRestore(event.target.files?.[0]);
-    });
     container.querySelectorAll('.checkout-device-btn').forEach((button) => {
       button.addEventListener('click', () => openCheckoutForm(container, country, Number(button.dataset.index), 'checkout'));
     });
@@ -2815,148 +2850,6 @@ App.registerModule('inventory', (() => {
       });
     });
 
-    document.getElementById('inventoryFileInput').onchange = async (event) => {
-      const [file] = event.target.files;
-      if (!file) return;
-      try {
-        const { rows: imported, validation: inventoryValidation } = parseInventoryCsv(await file.text());
-        const duplicateCount = countImportDuplicates(getInventory(), imported);
-        let importRows = imported;
-        let selectedRecognizedColumns = inventoryValidation.recognized;
-        event.target.value = '';
-        const saveImport = (keepDuplicates) => {
-          try {
-            const result = applyInventoryImport(importRows, keepDuplicates);
-            selectedDeviceIndexes.clear();
-            Modal.close();
-            render(container, country);
-            const parts = [`${result.added} added`, `${result.merged} merged`];
-            if (result.duplicatesKept) parts.push(`${result.duplicatesKept} duplicate${result.duplicatesKept === 1 ? '' : 's'} kept`);
-
-            // Log ignored columns: CSV headers present but not imported
-            const selectedSet = new Set(selectedRecognizedColumns);
-            const ignoredRecognized = inventoryValidation.recognized.filter((col) => !selectedSet.has(col));
-            const ignoredAll = [...inventoryValidation.unrecognized, ...ignoredRecognized];
-            if (ignoredAll.length) {
-              const ignoredLabels = ignoredAll.map((col) => IMPORT_COLUMN_LABELS[col] || col).join(', ');
-              console.log(`[CSV Import] Columns present but ignored: ${ignoredLabels}`);
-              parts.push(`${ignoredAll.length} column${ignoredAll.length === 1 ? '' : 's'} present but not imported: ${ignoredLabels}`);
-            }
-
-            Modal.open({
-              title: 'Inventory Import Report',
-              body: renderImportReport({
-                title: 'Inventory Import Report',
-                summaryLines: parts,
-                recognizedColumns: selectedRecognizedColumns.map((column) => IMPORT_COLUMN_LABELS[column] || column),
-                unrecognizedColumns: inventoryValidation.unrecognized
-              }),
-              onConfirm: () => Modal.close(),
-              confirmText: 'Close',
-              size: 'lg'
-            });
-          } catch (error) {
-            Modal.close();
-            Toast.show(`CSV import could not be saved: ${error.message || error}`, 'error');
-          }
-        };
-        const reviewDuplicates = () => {
-          if (!duplicateCount) {
-            saveImport(false);
-            return;
-          }
-          Modal.open({
-            title: 'Duplicate serial numbers found',
-            confirmText: 'Continue import',
-            body: `<p>${duplicateCount} duplicate serial-number record${duplicateCount === 1 ? '' : 's'} found. Choose how to handle them:</p>
-              <label class="duplicate-choice"><input type="radio" name="duplicateImportMode" value="merge" checked> Merge into the existing device record</label>
-              <label class="duplicate-choice"><input type="radio" name="duplicateImportMode" value="keep"> Keep each as a separate device (append -1, -2, etc.)</label>`,
-            onConfirm: () => saveImport(document.querySelector('input[name="duplicateImportMode"]:checked')?.value === 'keep')
-          });
-        };
-        Modal.open({
-          title: 'Review inventory CSV columns',
-          confirmText: 'Proceed to import',
-          body: `<p>All recognized columns are selected by default. Uncheck optional columns you do not want to import.</p>${renderImportReport({
-            title: `${imported.length} device row${imported.length === 1 ? '' : 's'} ready for review`,
-            selectableColumns: inventoryValidation.recognized.map((column) => ({ key: column, label: IMPORT_COLUMN_LABELS[column] || column })),
-            unrecognizedColumns: inventoryValidation.unrecognized
-          })}`,
-          onConfirm: () => {
-            const checked = Array.from(document.querySelectorAll('#modalBody input[data-import-column]:checked'));
-            selectedRecognizedColumns = checked.map((input) => input.dataset.importColumn);
-            importRows = imported.map((record) => selectedImportRecord(record, selectedRecognizedColumns));
-            Modal.close();
-            reviewDuplicates();
-          },
-          size: 'lg'
-        });
-      } catch (error) {
-        event.target.value = '';
-        Toast.show(error.message || 'CSV import failed.', 'error');
-      }
-    };
-
-    document.getElementById('warrantyFileInput').onchange = async (event) => {
-      const [file] = event.target.files;
-      if (!file) return;
-      try {
-        const { rows: warrantyRows, validation } = parseWarrantyCsv(await file.text());
-        const inventory = getInventory();
-        const serialMap = new Map();
-        inventory.forEach((device) => {
-          const serial = normalizeSerialKey(device['Serial number'] || device['IntuneGroup.SerialNumber']);
-          if (serial && !device['Duplicate Serial'] && !serialMap.has(serial)) serialMap.set(serial, device);
-          if (!device['Warranty Match Status']) device['Warranty Match Status'] = 'Unmatched';
-        });
-
-        const matched = [];
-        const unmatched = [];
-        const duplicates = [];
-        const seen = new Set();
-        warrantyRows.forEach((row) => {
-          const serial = normalizeSerialKey(row['Serial number']);
-          if (!serial) { unmatched.push(row); return; }
-          if (seen.has(serial)) { duplicates.push(row); return; }
-          seen.add(serial);
-          const match = serialMap.get(serial);
-          if (match) {
-            match['Warranty Start Date'] = normalizeDateInput(row['Warranty Start Date'], { allowAmbiguousSlash: false }).iso || '';
-            match['Warranty End Date'] = normalizeDateInput(row['Warranty End Date'], { allowAmbiguousSlash: false }).iso || '';
-            match['Warranty Match Status'] = 'Matched';
-            matched.push(match);
-          } else {
-            unmatched.push({ ...row, 'Warranty Match Status': 'Unmatched' });
-          }
-        });
-
-        setInventory(inventory);
-        setWarrantyData(warrantyRows);
-        const parts = [`${matched.length} matched`, `${unmatched.length} unmatched`];
-        if (duplicates.length) parts.push(`${duplicates.length} duplicate serials skipped`);
-        Modal.open({
-          title: 'Warranty Import Report',
-          body: renderImportReport({
-            title: 'Warranty Import Report',
-            summaryLines: parts,
-            recognizedColumns: validation.recognized.map((column) => IMPORT_COLUMN_LABELS[column] || column),
-            unrecognizedColumns: validation.unrecognized
-          }),
-          onConfirm: () => Modal.close(),
-          confirmText: 'Close',
-          size: 'lg'
-        });
-      } catch (error) {
-        Toast.show(error.message || 'Warranty import failed.', 'error');
-      }
-      event.target.value = '';
-      render(container, country);
-    };
-
-    settingsHost.querySelector('#importWarrantyBtn').addEventListener('click', () => {
-      settingsDropdown.open = false;
-      document.getElementById('warrantyFileInput').click();
-    });
     bindLayoutControlEvents(container);
   }
 
@@ -2980,6 +2873,12 @@ App.registerModule('inventory', (() => {
     parseCsvText,
     openCsvTemplateModal,
     renderImportReport,
+    promptInventoryExport,
+    exportCurrentInventory,
+    importInventoryCsvFile,
+    downloadDatabaseBackup,
+    confirmDatabaseRestore,
+    confirmClearDatabase,
     currentCheckoutFor(device) {
       return getCurrentCheckout(device);
     },

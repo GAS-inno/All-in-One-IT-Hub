@@ -547,6 +547,90 @@ App.registerModule('users', (() => {
     });
   }
 
+  async function importUsersCsvFile(file) {
+    if (!file) return;
+    const container = document.getElementById('moduleContainer');
+    try {
+      const parsed = parseUserCsv(await file.text());
+      const imported = parsed.imported;
+      const validation = parsed.validation;
+      if (validation.missingRequired && validation.missingRequired.length) {
+        Modal.open({
+          title: 'User CSV Import Review',
+          confirmText: 'Proceed to import',
+          body: `<div class="import-report"><div class="import-report-title">User CSV Import Review</div><div class="import-report-section"><strong style="color: var(--red);">Missing required columns:</strong> <ul>${validation.missingRequired.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul></div></div>`,
+          onConfirm: () => {}
+        });
+        return;
+      }
+      Modal.open({
+        title: 'User CSV Import Review',
+        confirmText: 'Proceed to import',
+        body: App.modules.inventory?.renderImportReport?.({
+          title: 'User CSV Import Review',
+          summaryLines: [`${imported.length} user record${imported.length === 1 ? '' : 's'} ready to import.`],
+          selectableColumns: validation.recognized.map((column) => ({ key: column, label: USER_IMPORT_COLUMN_LABELS[column] || column })),
+          recognizedColumns: validation.recognized,
+          unrecognizedColumns: validation.unrecognized
+        }) || `<div class="import-report"><div class="import-report-title">User CSV Import Review</div><div class="import-report-section"><strong style="color: var(--green);">Recognized columns (will be imported):</strong> ${validation.recognized.length ? `<ul>${validation.recognized.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul>` : '<p>No recognized columns found.</p>'}</div><div class="import-report-section"><strong style="color: var(--red);">Unrecognized columns:</strong> ${validation.unrecognized.length ? `<ul>${validation.unrecognized.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul>` : '<p>None</p>'}</div></div>`,
+        onConfirm: () => {
+          const existing = storedUsers();
+          const matchCount = imported.filter((record) => {
+            const recordId = String(record.UserID || '').trim().toLowerCase();
+            const key = userKey(record.Email, record.Name);
+            return existing.some((user) => {
+              const userId = String(user.UserID || user.id || '').trim().toLowerCase();
+              if (recordId && userId && recordId === userId) return true;
+              return userKey(user.Email, user.Name) === key;
+            });
+          }).length;
+
+          const applyImport = async (skipExisting) => {
+            try {
+              const result = mergeImportedUsers(existing, imported, { skipExisting });
+              await App.store.set('users', result.merged);
+              Modal.close();
+              if (App.currentModule === 'users' && container) render(container, countryFilter);
+              const summaryLines = [`${result.added} added`, `${result.updated} updated`];
+              if (result.skipped) summaryLines.push(`${result.skipped} existing skipped`);
+              Modal.open({
+                title: 'User Import Report',
+                confirmText: 'Close',
+                body: App.modules.inventory?.renderImportReport?.({
+                  title: 'User Import Report',
+                  summaryLines,
+                  recognizedColumns: validation.recognized,
+                  unrecognizedColumns: validation.unrecognized
+                }) || `<p>${escapeHtml(summaryLines.join(', '))}</p>`,
+                onConfirm: () => Modal.close()
+              });
+              Toast.show(`User import: ${summaryLines.join(', ')}.`, 'success');
+            } catch (error) {
+              Modal.close();
+              Toast.show(`Could not save users: ${error.message || error}`, 'error', 6000);
+            }
+          };
+
+          if (!matchCount) {
+            applyImport(false);
+            return;
+          }
+
+          Modal.open({
+            title: 'Matching users found',
+            confirmText: 'Continue import',
+            body: `<p>${matchCount} imported user record${matchCount === 1 ? '' : 's'} match existing users (by User ID, email, or name). Choose how to handle them:</p>
+              <label class="duplicate-choice"><input type="radio" name="userImportMode" value="merge" checked> Merge into existing users (update matching records, add new users)</label>
+              <label class="duplicate-choice"><input type="radio" name="userImportMode" value="skip"> Skip existing users (add only new users)</label>`,
+            onConfirm: () => applyImport(document.querySelector('input[name="userImportMode"]:checked')?.value === 'skip')
+          });
+        }
+      });
+    } catch (error) {
+      Toast.show(`User CSV import failed: ${error.message || error}`, 'error', 6000);
+    }
+  }
+
   function render(container, country = 'all') {
     countryFilter = country;
     const allUsers = getUsers();
@@ -627,8 +711,6 @@ App.registerModule('users', (() => {
         <div class="section-actions">
           <button class="btn btn-primary btn-sm" id="addUserBtn">+ Add user</button>
           <button class="btn btn-secondary btn-sm" id="usersFilterToggle" aria-expanded="${userFilterPanelOpen}">Filter</button>
-          <button class="btn btn-secondary btn-sm" id="importUsersBtn">Import users CSV</button>
-          <button class="btn btn-secondary btn-sm" id="exportUsersBtn">Export CSV</button>
           <div class="user-selection-actions" aria-label="Selected user actions">
             <button class="btn btn-secondary btn-sm" id="editUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Edit selected</button>
             <button class="btn btn-danger btn-sm" id="deleteUsersBtn" ${selectedUserIndexes.size ? '' : 'disabled'}>Delete selected</button>
@@ -680,7 +762,6 @@ App.registerModule('users', (() => {
           <option value="" ${userStaffTypeFilter === '' ? 'selected' : ''}>Unclassified</option>
         </select>
       </div>
-      <input id="usersFileInput" type="file" accept=".csv,text/csv" hidden />
       <div class="card inventory-table-wrap">
         <table class="inventory-table">
           <thead><tr><th><input type="checkbox" id="selectAllUsers" aria-label="Select all users" /></th><th>User ID</th><th>Name</th><th>Staff Type</th><th>Email</th><th>Account Active</th><th>Country</th><th>Location</th><th>Assigned assets</th><th>Actions</th></tr></thead>
@@ -700,94 +781,6 @@ App.registerModule('users', (() => {
       </div>
     `;
     container.querySelector('#addUserBtn').addEventListener('click', () => openUserForm(container));
-    container.querySelector('#exportUsersBtn').addEventListener('click', () => promptUsersExport());
-    const input = container.querySelector('#usersFileInput');
-    container.querySelector('#importUsersBtn').addEventListener('click', () => input.click());
-    input.addEventListener('change', async (event) => {
-      const [file] = event.target.files || [];
-      if (!file) return;
-      try {
-        const parsed = parseUserCsv(await file.text());
-        const imported = parsed.imported;
-        const validation = parsed.validation;
-        if (validation.missingRequired && validation.missingRequired.length) {
-          Modal.open({
-            title: 'User CSV Import Review',
-            confirmText: 'Proceed to import',
-            body: `<div class="import-report"><div class="import-report-title">User CSV Import Review</div><div class="import-report-section"><strong style="color: var(--red);">Missing required columns:</strong> <ul>${validation.missingRequired.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul></div></div>`,
-            onConfirm: () => {}
-          });
-          return;
-        }
-        Modal.open({
-          title: 'User CSV Import Review',
-          confirmText: 'Proceed to import',
-          body: App.modules.inventory?.renderImportReport?.({
-            title: 'User CSV Import Review',
-            summaryLines: [`${imported.length} user record${imported.length === 1 ? '' : 's'} ready to import.`],
-            selectableColumns: validation.recognized.map((column) => ({ key: column, label: USER_IMPORT_COLUMN_LABELS[column] || column })),
-            recognizedColumns: validation.recognized,
-            unrecognizedColumns: validation.unrecognized
-          }) || `<div class="import-report"><div class="import-report-title">User CSV Import Review</div><div class="import-report-section"><strong style="color: var(--green);">Recognized columns (will be imported):</strong> ${validation.recognized.length ? `<ul>${validation.recognized.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul>` : '<p>No recognized columns found.</p>'}</div><div class="import-report-section"><strong style="color: var(--red);">Unrecognized columns:</strong> ${validation.unrecognized.length ? `<ul>${validation.unrecognized.map((column) => `<li>${escapeHtml(column)}</li>`).join('')}</ul>` : '<p>None</p>'}</div></div>`,
-          onConfirm: () => {
-            const existing = storedUsers();
-            const matchCount = imported.filter((record) => {
-              const recordId = String(record.UserID || '').trim().toLowerCase();
-              const key = userKey(record.Email, record.Name);
-              return existing.some((user) => {
-                const userId = String(user.UserID || user.id || '').trim().toLowerCase();
-                if (recordId && userId && recordId === userId) return true;
-                return userKey(user.Email, user.Name) === key;
-              });
-            }).length;
-
-            const applyImport = async (skipExisting) => {
-              try {
-                const result = mergeImportedUsers(existing, imported, { skipExisting });
-                await App.store.set('users', result.merged);
-                Modal.close();
-                render(container, countryFilter);
-                const summaryLines = [`${result.added} added`, `${result.updated} updated`];
-                if (result.skipped) summaryLines.push(`${result.skipped} existing skipped`);
-                Modal.open({
-                  title: 'User Import Report',
-                  confirmText: 'Close',
-                  body: App.modules.inventory?.renderImportReport?.({
-                    title: 'User Import Report',
-                    summaryLines,
-                    recognizedColumns: validation.recognized,
-                    unrecognizedColumns: validation.unrecognized
-                  }) || `<p>${escapeHtml(summaryLines.join(', '))}</p>`,
-                  onConfirm: () => Modal.close()
-                });
-                Toast.show(`User import: ${summaryLines.join(', ')}.`, 'success');
-              } catch (error) {
-                Modal.close();
-                Toast.show(`Could not save users: ${error.message || error}`, 'error', 6000);
-              }
-            };
-
-            if (!matchCount) {
-              applyImport(false);
-              return;
-            }
-
-            Modal.open({
-              title: 'Matching users found',
-              confirmText: 'Continue import',
-              body: `<p>${matchCount} imported user record${matchCount === 1 ? '' : 's'} match existing users (by User ID, email, or name). Choose how to handle them:</p>
-                <label class="duplicate-choice"><input type="radio" name="userImportMode" value="merge" checked> Merge into existing users (update matching records, add new users)</label>
-                <label class="duplicate-choice"><input type="radio" name="userImportMode" value="skip"> Skip existing users (add only new users)</label>`,
-              onConfirm: () => applyImport(document.querySelector('input[name="userImportMode"]:checked')?.value === 'skip')
-            });
-          }
-        });
-      } catch (error) {
-        Toast.show(`User CSV import failed: ${error.message || error}`, 'error', 6000);
-      } finally {
-        event.target.value = '';
-      }
-    });
     const usersSearchInput = container.querySelector('#usersSearch');
     usersSearchInput.addEventListener('input', (event) => {
       userSearch = String(event.target.value || '');
@@ -1097,6 +1090,9 @@ App.registerModule('users', (() => {
   return {
     render,
     checkoutOptions,
+    promptUsersExport,
+    exportUsersCsv,
+    importUsersCsvFile,
     onCountryChange(country) {
       countryFilter = country;
       selectedUserKey = '';

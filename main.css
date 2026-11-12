@@ -247,7 +247,7 @@ body {
   color: var(--text-primary);
 }
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-#inventorySettingsHost { display: flex; align-items: center; }
+.global-more-tools { display: inline-flex; align-items: center; }
 
 /* ── Country Filter ── */
 .country-filter {
@@ -904,7 +904,7 @@ input[type="date"].form-control::-webkit-calendar-picker-indicator { filter: inv
 @media (max-width: 480px) {
   .stats-grid { grid-template-columns: 1fr 1fr; }
   .btn { padding: 7px 12px; }
-  #inventorySettingsHost .inventory-settings-dropdown > summary { font-size: 11px; padding: 7px 9px; }
+  .global-more-tools.inventory-settings-dropdown > summary { font-size: 11px; padding: 7px 9px; }
   .modal { margin: 16px; max-width: calc(100% - 32px); }
 }
 

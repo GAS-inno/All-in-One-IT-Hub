@@ -164,7 +164,6 @@ const App = {
 
     // Render module
     const container = document.getElementById('moduleContainer');
-    document.getElementById('inventorySettingsHost')?.replaceChildren();
     container.innerHTML = '';
     container.style.animation = 'none';
     container.offsetHeight; // reflow
@@ -443,6 +442,105 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('modalCancel').addEventListener('click', () => Modal.close());
   document.getElementById('modalConfirm').addEventListener('click', () => {
     if (Modal._onConfirm) Modal._onConfirm();
+  });
+
+  // Global "More tools" (persists across route changes)
+  const closeGlobalMoreTools = () => {
+    const dropdown = document.getElementById('globalMoreTools');
+    if (dropdown) dropdown.open = false;
+  };
+
+  const promptGlobalExport = () => {
+    Modal.open({
+      title: 'Export CSV',
+      confirmText: 'Next',
+      body: `<p>Choose which data to export.</p>
+        <label class="duplicate-choice"><input type="radio" name="globalExportSource" value="inventory" checked> Asset Inventory data</label>
+        <label class="duplicate-choice"><input type="radio" name="globalExportSource" value="users"> User list data</label>`,
+      onConfirm: () => {
+        const source = document.querySelector('input[name="globalExportSource"]:checked')?.value || 'inventory';
+        Modal.close();
+        Modal.open({
+          title: source === 'users' ? 'Export users CSV' : 'Export inventory CSV',
+          confirmText: 'Export CSV',
+          body: `<p>Choose which columns to include.${source === 'inventory' ? ' The current search and filters still determine which devices are exported.' : ' The current search and filters determine which users are exported.'}</p>
+            <label class="duplicate-choice"><input type="radio" name="globalExportColumns" value="active" checked> Active columns</label>
+            <label class="duplicate-choice"><input type="radio" name="globalExportColumns" value="all"> All columns</label>`,
+          onConfirm: () => {
+            const all = document.querySelector('input[name="globalExportColumns"]:checked')?.value === 'all';
+            Modal.close();
+            if (source === 'users') {
+              App.modules.users?.exportUsersCsv?.(all);
+            } else {
+              App.modules.inventory?.exportCurrentInventory?.(all);
+            }
+          }
+        });
+      }
+    });
+  };
+
+  const promptGlobalImport = () => {
+    Modal.open({
+      title: 'Import CSV',
+      confirmText: 'Next',
+      body: `<p>Choose which data to import.</p>
+        <label class="duplicate-choice"><input type="radio" name="globalImportSource" value="inventory" checked> Asset Inventory data</label>
+        <label class="duplicate-choice"><input type="radio" name="globalImportSource" value="users"> User list data</label>`,
+      onConfirm: () => {
+        const source = document.querySelector('input[name="globalImportSource"]:checked')?.value || 'inventory';
+        Modal.close();
+        const input = document.getElementById(source === 'users' ? 'globalUsersImportInput' : 'globalInventoryImportInput');
+        if (input) {
+          input.value = '';
+          input.dataset.pending = '1';
+          input.click();
+        }
+      }
+    });
+  };
+
+  document.getElementById('globalBackupDatabaseBtn')?.addEventListener('click', () => {
+    closeGlobalMoreTools();
+    App.modules.inventory?.downloadDatabaseBackup?.();
+  });
+  document.getElementById('globalRestoreDatabaseBtn')?.addEventListener('click', () => {
+    closeGlobalMoreTools();
+    const input = document.getElementById('globalDatabaseRestoreInput');
+    if (input) { input.value = ''; input.click(); }
+  });
+  document.getElementById('globalCleanDatabaseBtn')?.addEventListener('click', () => {
+    closeGlobalMoreTools();
+    App.modules.inventory?.confirmClearDatabase?.();
+  });
+  document.getElementById('globalExportCsvBtn')?.addEventListener('click', () => {
+    closeGlobalMoreTools();
+    promptGlobalExport();
+  });
+  document.getElementById('globalImportCsvBtn')?.addEventListener('click', () => {
+    closeGlobalMoreTools();
+    promptGlobalImport();
+  });
+
+  document.getElementById('globalDatabaseRestoreInput')?.addEventListener('change', (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (file) App.modules.inventory?.confirmDatabaseRestore?.(file);
+  });
+  document.getElementById('globalInventoryImportInput')?.addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (file) await App.modules.inventory?.importInventoryCsvFile?.(file);
+  });
+  document.getElementById('globalUsersImportInput')?.addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (file) await App.modules.users?.importUsersCsvFile?.(file);
+  });
+
+  document.addEventListener('click', (event) => {
+    const dropdown = document.getElementById('globalMoreTools');
+    if (dropdown && dropdown.open && !dropdown.contains(event.target)) dropdown.open = false;
   });
   // Backdrop clicks intentionally do not dismiss open forms; use the explicit controls above.
   // Load inventory from SQLite before rendering any module.
