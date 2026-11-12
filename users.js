@@ -252,7 +252,7 @@ App.registerModule('users', (() => {
       title: 'Add user',
       confirmText: 'Add user',
       body: `<form id="userForm" class="device-form">
-        <label>Name <span class="required">*</span><input name="name" required autocomplete="name" /></label>
+        <label>Name<input name="name" autocomplete="name" /></label>
         <label>Email<input name="email" type="email" autocomplete="email" /></label>
         <label>Account Active<select name="accountActive"><option value="YES" selected>YES</option><option value="NO">NO</option></select></label>
         <label>Country<input name="country" placeholder="e.g. Singapore or SG" /></label>
@@ -285,7 +285,7 @@ App.registerModule('users', (() => {
               ...current[duplicateIndex],
               ...record,
               UserID: current[duplicateIndex].UserID,
-              Name: record.Name || current[duplicateIndex].Name,
+              Name: record.Name,
               Email: record.Email || current[duplicateIndex].Email,
               Country: record.Country || current[duplicateIndex].Country,
               Location: record.Location || current[duplicateIndex].Location
@@ -322,13 +322,12 @@ App.registerModule('users', (() => {
       country: headers.findIndex((header) => header === 'country'),
       location: headers.findIndex((header) => ['location', 'office', 'site', 'localtion'].includes(header))
     };
-    if (indexes.name < 0) throw new Error('User CSV must include a NAME column (or Full Name/User Name/Staff Name).');
+    // Name column is optional; allow empty names. Keep index lookup for compatibility when present.
 
     const imported = rows.slice(1).map((row, rowIndex) => {
       const value = (index) => index < 0 ? '' : String(row[index] || '').trim();
-      const name = value(indexes.name);
+      const name = indexes.name >= 0 ? value(indexes.name) : '';
       const email = value(indexes.email);
-      if (!name) throw new Error(`User CSV row ${rowIndex + 2} is missing a name.`);
       if (email && (!email.includes('@') || email.startsWith('@') || email.endsWith('@'))) {
         throw new Error(`User CSV row ${rowIndex + 2} has an invalid email address.`);
       }
@@ -401,8 +400,8 @@ App.registerModule('users', (() => {
     const nameKeys = ['name', 'full name', 'user name', 'staff name', 'userid', 'user id'];
     const userIdKeys = ['userid', 'user id'];
     const missingRequired = [];
-    if (!nameKeys.some((key) => normalizedSet.has(key))) missingRequired.push('NAME (or Full Name/User Name/Staff Name)');
-    if (!userIdKeys.some((key) => normalizedSet.has(key))) missingRequired.push('USER ID');
+    // Name column is optional; USER ID is still recommended but may be generated on import depending on format.
+    // Keep strictness minimal here and allow empty names for edit/import flexibility.
     return { recognized, unrecognized, missingRequired };
   }
 
@@ -945,7 +944,7 @@ App.registerModule('users', (() => {
         title: `Edit ${toEdit.length} user${toEdit.length === 1 ? '' : 's'}`,
         confirmText: 'Save changes',
         body: `<form id="userEditForm" class="device-form">
-          <label>Name <span class="required">*</span><input name="name" required value="${escapeHtml(first.name)}" /></label>
+          <label>Name<input name="name" value="${escapeHtml(first.name)}" /></label>
           <label>Email<input name="email" type="email" value="${escapeHtml(first.email || '')}" /></label>
           <label>Account Active<select name="accountActive"><option value="YES" ${first.accountActive === 'YES' ? 'selected' : ''}>YES</option><option value="NO" ${first.accountActive === 'NO' ? 'selected' : ''}>NO</option></select></label>
           <label>Country<input name="country" value="${escapeHtml(first.country || '')}" /></label>

@@ -2,7 +2,7 @@
 
 A local IT asset inventory and operations dashboard built with HTML, CSS, vanilla JavaScript, Python's standard library, and SQLite. It supports Intune-style inventory CSV import, warranty matching, user-to-asset views, durable asset checkout/check-in history, device replacements, filtering, analytics, CSV exports, and a global dark/light theme.
 
-> **Local-use application:** By default the server listens on `127.0.0.1` and SQLite is designed for one local app instance/user at a time. This is not a hosted, multi-user service. Do not expose it to the internet or an untrusted network. If you need access from another device on a private network (for example, over Tailscale), you can bind to another interface with `NEXIT_HOST`, but the app still has no authentication or authorization — only do this on networks you trust.
+> **Internal IT application:** NexIT requires sign-in and uses role-based access control (RBAC). By default the server listens on `127.0.0.1` and SQLite is designed for one local app instance at a time. If you need access from another device on a trusted private network (for example, over Tailscale), bind with `NEXIT_HOST` and serve over HTTPS where possible; access is still limited to internal users with valid accounts and is not intended for public internet exposure.
 
 ## Requirements
 
@@ -55,13 +55,28 @@ By default NexIT is reachable only on the same machine at `http://localhost:8000
 NEXIT_HOST=0.0.0.0 python3 server.py
 ```
 
-Then open `http://<this-machine-ip>:8000` from the other device (for Tailscale, use this machine's Tailscale IP, e.g. from `tailscale ip -4`). NexIT has no sign-in or access controls, so do not use this on untrusted networks. Use the default `127.0.0.1` bind when you only need local access.
+Then open `http://<this-machine-ip>:8000` from the other device (for Tailscale, use this machine's Tailscale IP, e.g. from `tailscale ip -4`). NexIT requires authenticated internal accounts and enforces role-based access, but it is still intended for trusted private-network use (not public internet exposure). Prefer HTTPS/reverse-proxy TLS when accessing from another device; session cookies are marked `Secure` when requests arrive over HTTPS. Use the default `127.0.0.1` bind when you only need local access.
 
-The server binds to `127.0.0.1:8000` by default. For local testing you can set `NEXIT_PORT` (and optionally `NEXIT_HOST`) before starting it, for example `NEXIT_PORT=8080 python3 server.py`. Keep the default host for normal use; changing `NEXIT_HOST` exposes the unauthenticated app to other machines and is not recommended.
+The server binds to `127.0.0.1:8000` by default. For local testing you can set `NEXIT_PORT` (and optionally `NEXIT_HOST`) before starting it, for example `NEXIT_PORT=8080 python3 server.py`. Keep the default host for normal use unless you explicitly need trusted private-network access.
 
 ## First run and local data
 
 The server automatically creates `nexit-assets.db` in the operating system's local application-data directory. On first startup, if the database is empty, the app can copy legacy `nexit_inventory` and `nexit_warranty` browser data into SQLite. The original browser values are not deleted.
+
+### Authentication and initial admin account
+
+- NexIT has **no public signup**. Login accounts are created by administrators.
+- On a fresh install there are no login accounts. Create the first **admin** account before signing in:
+  - `python3 seed_admin.py --username admin --password 'StrongTempPassword123!'`
+  - or interactive: `python3 seed_admin.py`
+  - optional: `--force-reset-password` to reset an existing username
+- Passwords are stored as hashes (PBKDF2-SHA256), never plaintext.
+- Sessions use a server-side HttpOnly cookie with **30-minute inactivity auto-logout** (sliding) and login rate limiting/lockout protection.
+- **Roles:**
+  - **MEMBER:** can access app features except **Clean Database**, **Restore Database**, and **User Management**.
+  - **ADMIN:** full access, including login-account **User Management** (create user, reset password, disable/delete user). Admins cannot delete their own account; password resets revoke existing sessions for that login user.
+- Use the **Logout** button in the top bar to end your session.
+- Login accounts (`auth_users`) and auth sessions are stored in the same SQLite database but are **preserved** when **Clean Database** clears application data.
 
 Database location:
 
@@ -77,8 +92,8 @@ The project intentionally does not include device, warranty, or replacement reco
 
 ### Global controls and theme
 
-- **More tools** (topbar, visible on every page): fixed actions **Backup Database**, **Restore Database**, **Clean Database**, **Export CSV**, **Import CSV**, **Download CSV template**. **Export CSV** and **Import CSV** use two-step choosers: pick **Asset Inventory data** or **User list data**, then choose **Active columns** / **All columns** (export) or continue with the existing import/review flow for the selected source. Exports are generated as UTF-8 with BOM. The separate **Import Warranty** control has been removed from the UI as redundant.
-- **Theme toggle** (next to More tools): switches between dark and light modes for the whole app (shell, tables, dashboard/charts, modals, dropdowns, toasts, tooltips, and native controls). The choice is saved in `localStorage`, respects `prefers-color-scheme` on first load, and is applied before paint to avoid a flash. Dashboard charts re-read theme colors on toggle.
+- **More tools** (topbar, visible on every page): actions include **Backup Database**, **Restore Database** (admin only), **Clean Database** (admin only), **Export CSV**, **Import CSV**, and **Download CSV template**. **Export CSV** and **Import CSV** use two-step choosers: pick **Asset Inventory data** or **User list data**, then choose **Active columns** / **All columns** (export) or continue with the existing import/review flow for the selected source. Exports are generated as UTF-8 with BOM. The separate **Import Warranty** control has been removed from the UI as redundant.
+- **Theme toggle** and **Logout** are available in the top bar. The theme choice is saved in `localStorage`, respects `prefers-color-scheme` on first load, and is applied before paint to avoid a flash. Dashboard charts re-read theme colors on toggle.
 
 ### Dashboard
 
@@ -118,11 +133,15 @@ Replacement fields shown in the table are derived from the separate replacement 
 
 In **Edit selected**, Replacement Status uses **Not replaced**, **Replaced**, **Pending replacement**, or **In progress**. Staff Employment Status uses **Active**, **Leaver**, **Contractor**, or **Unknown**. Existing values outside these lists remain selectable with a **legacy** marker until changed.
 
-Use global **More tools → Backup Database** to download a consistent SQLite snapshot containing inventory, warranty, replacement, checkout/check-in, and Users data. Choose **Restore Database** and select a NexIT `.db` backup to replace the current database; NexIT validates the file before restoring and reloads the app afterward. **Clean Database** clears application data (use with care and keep a backup first). Restore replaces all current data, so create and keep a backup before restoring. Database backup uploads are limited to 512 MB.
+Use global **More tools → Backup Database** to download a consistent SQLite snapshot containing inventory, warranty, replacement, checkout/check-in, and Users/staff data. Choose **Restore Database** (admin only) and select a NexIT `.db` backup to replace the current database; NexIT validates the file before restoring and reloads the app afterward. **Clean Database** (admin only) clears application data, including staff-directory Users records, but **preserves login accounts and auth sessions** so access control is not removed (use with care and keep a backup first). Restore replaces all current data, so create and keep a backup before restoring. Database backup uploads are limited to 512 MB.
 
 ### Users and assigned assets
 
-Open **Users** to maintain the staff directory used by asset checkout. Choose **+ Add user** to enter a name, optional email, Account Active status, country, and location, or use global **More tools → Import CSV → User list data** to load multiple users. CSV requires a `Name`, `Full Name`, `User Name`, or `Staff Name` column; `User ID`, `Email`, `Account Active`, `Country`, and `Location` are optional. Imports merge by email (or by name when email is blank) and update matching users (with a prompt when matching users are found). The list is stored in SQLite and is included in database backups. Use **More tools → Export CSV → User list data** to export active or all columns for the currently filtered users.
+Open **Users** to maintain the **staff directory** used by asset checkout (separate from login/RBAC accounts). Choose **+ Add user** to enter a name (optional), optional email, Account Active status, country, and location, or use global **More tools → Import CSV → User list data** to load multiple users. CSV name columns (`Name`, `Full Name`, `User Name`, `Staff Name`) and `User ID`, `Email`, `Account Active`, `Country`, and `Location` are supported; name may be blank. Imports merge by User ID/email (or by name when email is blank) and update matching users (with a prompt when matching users are found). The list is stored in SQLite and is included in database backups. Use **More tools → Export CSV → User list data** to export active or all columns for the currently filtered users.
+
+### Login account management (Admin only)
+
+Open **User Management** (admin-only) to manage NexIT login accounts (RBAC), which are separate from the staff directory above. Admins can create login users (username, role: `admin` or `member`, password), reset passwords for any login user, and disable/delete login users (soft delete; active sessions revoked). Admins cannot delete their own login account. No public signup is available.
 
 Each Users record has an **Account Active** value of **YES** or **NO**, which can be set when adding or editing users or supplied in an `Account Active` CSV column. If that column is blank or absent, the value defaults to **YES**. There is no automatic email-format classification.
 
@@ -142,7 +161,7 @@ The one-time migration `migrations/migrate_add_staff_type.py` backfills `staff_t
 
 The directory also includes users inferred from imported Primary user fields and active checkout records, so existing inventory users remain available for checkout selection. A device is listed under a directory user only when the asset's Primary user UPN/email matches that user's Email. User profiles list each assigned serial number once; one user may have multiple assets. A current checkout takes precedence over the imported Primary user in the directory until the asset is checked in.
 
-The Users list includes a search box that filters the staff directory by name or email address. The summary below the Users title shows the visible user total, active and inactive account totals, and assigned serial count; totals follow the current filters. The filter combines with the country filter and updates the list of users shown. Use the **Assigned assets (count)** filter to show only users with a specific number of assigned assets. Open **Filter** for a slide-over panel that filters the Users table by User ID, Name, Email, Staff Type, Account Active, Country, Location, or Assigned assets, and choose **Reset** to clear them. The per-row **Delete** action has been removed; use **Delete selected** with row checkboxes for bulk deletion. Deleting a user clears the Primary user assignment on their assigned devices. Adding a user with an email that already exists merges into the existing user record instead of creating a duplicate. The Users table also supports **Edit selected** with row checkboxes; selecting one or more users and choosing **Edit selected** opens an edit form for their name, email, Account Active status, country, and location.
+The Users list includes a search box that filters the staff directory by name or email address. The summary below the Users title shows the visible user total, active and inactive account totals, and assigned serial count; totals follow the current filters. The filter combines with the country filter and updates the list of users shown. Use the **Assigned assets (count)** filter to show only users with a specific number of assigned assets. Open **Filter** for a slide-over panel that filters the Users table by User ID, Name, Email, Staff Type, Account Active, Country, Location, or Assigned assets, and choose **Reset** to clear them. The per-row **Delete** action has been removed; use **Delete selected** with row checkboxes for bulk deletion. Deleting a user clears the Primary user assignment on their assigned devices. Adding a user with an email that already exists merges into the existing user record instead of creating a duplicate. The Users table also supports **Edit selected** with row checkboxes; selecting one or more users and choosing **Edit selected** opens an edit form for their name (optional), email, Account Active status, country, and location.
 
 When adding or editing a laptop, use the **Primary user** field to search managed users by name or email. Selecting a match fills in the email; entering a new name (with an optional email) adds that person to the Users directory when the laptop is saved. An email address on its own does not create a directory user, and a user's Name is never filled from an email address.
 
@@ -229,7 +248,7 @@ Optional headers: `Warranty Start Date`, `Warranty End Date`.
 
 Template headers (programmatic, exact labels): **USER ID, NAME, STAFF TYPE, EMAIL, ACCOUNT ACTIVE, COUNTRY, LOCATION**. `ASSIGNED ASSETS` is derived and excluded from the template/import.
 
-Import accepts common aliases case-insensitively: `USER ID`/`User ID`, `NAME`/`Name`/`Full Name`/`User Name`/`Staff Name`, `STAFF TYPE`, `EMAIL`/`Email Address`/`Staff Email`, `ACCOUNT ACTIVE`/`Active`, `COUNTRY`, and `LOCATION`/`Office`/`Site`. A name/User ID column and USER ID (or an accepted alias) are required by the importer; other fields are optional. `USER ID` is imported when present; users added manually without one receive a generated ID. Rows are merged into the saved Users list by email, or by name when no email is provided. `STAFF TYPE` accepts `Internal Staff`, `External Staff`, or `Unclassified` (auto/cleared behavior follows app rules); `ACCOUNT ACTIVE` uses `YES`/`NO` and defaults to `YES` when blank/absent. Use UTF-8 with BOM and Excel **Data → From Text/CSV** with ID/code columns set to **Text**.
+Import accepts common aliases case-insensitively: `USER ID`/`User ID`, `NAME`/`Name`/`Full Name`/`User Name`/`Staff Name`, `STAFF TYPE`, `EMAIL`/`Email Address`/`Staff Email`, `ACCOUNT ACTIVE`/`Active`, `COUNTRY`, and `LOCATION`/`Office`/`Site`. Name may be blank; other fields are optional (User ID is imported when present, and users added manually without one receive a generated ID). Rows are merged into the saved Users list by User ID/email, or by name when no email is provided. `STAFF TYPE` accepts `Internal Staff`, `External Staff`, or `Unclassified` (auto/cleared behavior follows app rules); `ACCOUNT ACTIVE` uses `YES`/`NO` and defaults to `YES` when blank/absent. Use UTF-8 with BOM and Excel **Data → From Text/CSV** with ID/code columns set to **Text**.
 
 ### Replacement history CSV
 
@@ -250,7 +269,7 @@ The app validates these fields during import and supports commas, quotes, and ne
 
 ## Backup and restore
 
-Use global **More tools → Backup Database** to create an online backup without stopping the app. Copy the downloaded file to secure backup storage that is separate from the computer running NexIT; the browser's Downloads folder is not an off-device backup by itself. To restore, use **More tools → Restore Database** and select a trusted NexIT backup. Restore replaces the whole active database and reloads the app. The uploaded file must be a readable NexIT SQLite database and no larger than 512 MB. Use **Clean Database** only when you intentionally want to clear application data (keep a backup first).
+Use global **More tools → Backup Database** to create an online backup without stopping the app. Copy the downloaded file to secure backup storage that is separate from the computer running NexIT; the browser's Downloads folder is not an off-device backup by itself. To restore, use **More tools → Restore Database** (admin only) and select a trusted NexIT backup. Restore replaces the whole active database and reloads the app. The uploaded file must be a readable NexIT SQLite database and no larger than 512 MB. Use **Clean Database** (admin only) only when you intentionally want to clear application data (login accounts/auth sessions are preserved; keep a backup first).
 
 Backups contain device and staff information; protect them like the active database. For manual recovery, stop NexIT first, then replace `nexit-assets.db` at the database location listed above with a trusted backup and restart the app. CSV exports remain useful for transferring individual datasets, but do not include all application data and history.
 
@@ -280,15 +299,16 @@ The tests use temporary SQLite databases and do not need your local inventory da
 - `inventory.js` — inventory, filters, CSV import/export flows, warranty/status/custody handling, and reusable backup/restore/clean handlers
 - `users.js` — staff directory, user CSV import/export flows, and per-user assigned assets
 - `replacement-history.js` — replacement history UI, validation, matching, and CSV transfer
-- `server.py` — local HTTP server, SQLite API, and status-field validation
+- `server.py` — local HTTP server, SQLite API, authentication/RBAC/session enforcement, and status-field validation
+- `seed_admin.py` — creates/resets the initial admin login account
 - `migrations/migrate_inventory_status_json.py` — idempotent one-time migration for deployment status, condition, and archive fields
 - `test_server.py`, `test_dashboard_metrics.py`, `test_status_validation.py` — automated tests
 - `start-linux.sh`, `start-windows.bat` — convenience launchers
 
 ## Security and deployment notes
 
-- The app has no sign-in, user roles, multi-user synchronization, or audit log.
-- The local server binds to `127.0.0.1` by default. `NEXIT_HOST` and `NEXIT_PORT` can override the bind address/port for trusted private-network access (for example, Tailscale), but NexIT still has no authentication, authorization, or production hardening — do not expose it to the internet or untrusted networks.
+- NexIT includes sign-in, role-based access control (admin/member), server-side session management with inactivity timeout, and login rate limiting, but it does not provide full enterprise audit logging or multi-user conflict synchronization. Treat it as an internal tool, not a hardened public-facing service.
+- The local server binds to `127.0.0.1` by default. `NEXIT_HOST` and `NEXIT_PORT` can override the bind address/port for trusted private-network access (for example, Tailscale); use HTTPS/TLS in front of it for non-local access and do not expose it to the internet or untrusted networks.
 - Keep the SQLite database, exports, and Intune source files private. Never commit real user, device, warranty, or replacement data to a public repository.
 - Database backups are user-initiated downloads; there is no automatic or off-device backup service. Establish a regular backup schedule and store copies separately.
 - GitHub Pages cannot run this app by itself because inventory and replacement changes require the Python/SQLite API.

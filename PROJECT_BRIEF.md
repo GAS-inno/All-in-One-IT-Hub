@@ -1,10 +1,10 @@
 # Project Brief
 
-> Last updated: 2026-11-12
+> Last updated: 2026-11-13
 
 ## Purpose
 
-NexIT is a local IT asset management app for inventory, warranty, staff assignments, checkout/check-in, and device replacement history. It is designed for one local operator and stores data in SQLite.
+NexIT is a local/internal IT asset management app for inventory, warranty, staff assignments, checkout/check-in, and device replacement history. It stores data in SQLite and requires authenticated, role-based access (admin/member).
 
 ## Architecture
 
@@ -12,15 +12,18 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 - Theming: CSS custom properties on `:root` with `[data-theme="dark"]` overrides (light/dark), `color-scheme` for native controls/scrollbars, a pre-paint inline `<head>` script in `index.html` to avoid flash, global theme toggle next to **More tools** (persisted in `localStorage`, respects `prefers-color-scheme` on first load), and `nexit:themechange` events so dashboard charts re-read theme tokens.
 - Backend: Python standard library (`http.server`, `sqlite3`); no external Python packages.
 - Storage: SQLite database at the platform's local application-data directory. `server.py` prints the active path and `/api/health` reports it.
+- Authentication/RBAC: server-side HttpOnly session cookie (`nexit_session`), PBKDF2-SHA256 password hashes, 30-minute inactivity auto-logout (sliding) with absolute session cap, login rate limiting/lockout, and role checks (`admin`, `member`). No public signup; initial admin is seeded via `seed_admin.py`. `/api/health` is public; other `/api/*` routes require authentication, with admin-only enforcement for Clean Database, Restore Database, and login-account management.
 - Dashboard charts use Chart.js from jsDelivr; internet access is needed for those charts. Chart colors/options are derived from theme CSS variables and refreshed on theme toggle.
-- Global app shell: **More tools** in the topbar is persistent across pages with fixed actions **Backup Database, Restore Database, Clean Database, Export CSV, Import CSV, Download CSV template**; Export/Import use source-aware choosers (Asset Inventory/User list, active/all or existing import flow) and reuse module handlers. "Download CSV template" opens the template preview/modal from the inventory module (placement moved from sidebar).
-- Start from the project directory with `python3 server.py` (Linux/macOS) or `py server.py` (Windows). The server binds to `127.0.0.1:8000` by default; `NEXIT_HOST` and `NEXIT_PORT` can override the bind for trusted private-network access (e.g. Tailscale). NexIT has no authentication.
+- Global app shell: **More tools** in the topbar is persistent across pages with role-aware actions (**Backup Database**, **Restore Database** admin-only, **Clean Database** admin-only, **Export CSV**, **Import CSV**, **Download CSV template**), plus **Theme** and **Logout**. Import/export use source-aware choosers and reuse module handlers.
+- Start from the project directory with `python3 server.py` (Linux/macOS) or `py server.py` (Windows). The server binds to `127.0.0.1:8000` by default; `NEXIT_HOST` and `NEXIT_PORT` can override the bind for trusted private-network access (e.g. Tailscale). Use HTTPS/TLS for non-local access.
 
 ## Data ownership and rules
 
 - `inventory_devices` is the current device record. Inventory imports merge by normalized serial number and preserve saved values for blank or null-like cells.
 - `warranty_records` stores warranty source data matched to inventory by serial.
-- `users` is the managed staff directory. User IDs are stable keys; names and emails are canonicalized from this table when replacement records are saved. User IDs are imported from a `User ID` CSV column when present; otherwise a generated ID is assigned.
+- `users` is the managed staff directory (not login accounts). User IDs are stable keys; names and emails are canonicalized from this table when replacement records are saved. User IDs are imported from a `User ID` CSV column when present; otherwise a generated ID is assigned. **Name may be blank** (optional in add/edit/import; server requires User ID).
+- `auth_users` stores NexIT login accounts (separate from staff `users`): username (unique, case-insensitive), PBKDF2-SHA256 `password_hash`, role (`admin`/`member`), active/lockout/login metadata. No public signup. Admin can create/reset/disable login users; self-delete is blocked and password reset revokes sessions.
+- `auth_sessions` stores server-side sessions for cookie auth (inactivity/expiry/revocation). `auth_login_attempts` tracks failed-login rate limiting/lockout. **Clean Database clears application data only and preserves auth tables** (`auth_users`, `auth_sessions`, `auth_login_attempts`) so access control remains intact.
 - User records include an `Account Active` value (`YES` or `NO`). A user CSV may supply it directly; when blank or absent, the value defaults to `YES`. Users can set this value in the add and edit forms. There is no automatic email-format classification.
 - User records include a `Staff Type` (`External Staff`, `Internal Staff`, or unset) and a `staff_type_source` (`auto` or `manual`). Auto-detection reads the user `Name` for a standalone `EXT` token inside parentheses and defaults to `Internal Staff`; vendor text after the marker is surfaced unnormalized. A source of `manual` permanently overrides auto-detection until `POST /api/users/staff-type/reset` clears it back to `auto` and recomputes. Re-imports preserve manual overrides. The one-time migration `migrations/migrate_add_staff_type.py` backfills both fields with source `auto`. Staff Type can be set manually through the add-user form and the bulk **Edit selected** flow; saving a chosen value marks the override `manual`.
 - A device is attached to a directory user only when the asset's Primary user UPN/email matches that user's Email (case-insensitive). Display names come from the user record or the asset's Primary user display name, never from an email address.
@@ -55,38 +58,40 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 
 | File | Responsibility |
 |---|---|
-| `index.html` | Page shell, navigation, global More tools/theme toggle, pre-paint theme bootstrap, and script loading |
-| `app.js` | App state, API-backed store, navigation, dialogs, shared helpers, global More tools routing, theme persistence/toggle |
+| `index.html` | Page shell, navigation, login overlay, global More tools/theme toggle/logout, pre-paint theme bootstrap, and script loading |
+| `app.js` | App state, auth client/gating, API-backed store, navigation, dialogs, shared helpers, global More tools routing, role-aware UI, theme persistence/toggle, and admin login-account management module |
 | `constants.js`, `constants.py` | Shared deployment status, condition, disposition-method, and badge-colour lists (kept in sync) |
 | `inventory.js` | Inventory UI, filter drawer, import/export flows, structured device forms, staff autocomplete, checkout/check-in history, status labels, reusable backup/restore/clean handlers |
 | `users.js` | Staff directory, user CSV import/export flows, and per-user assigned assets |
 | `replacement-history.js` | Replacement history UI, linked autocomplete, CSV transfer |
 | `dashboard.js` | Dashboard filters, charts, inventory drill-through; derives chart colors/options from theme tokens and refreshes on `nexit:themechange` |
-| `server.py` | HTTP API, SQLite persistence, status-field validations, backup/restore |
+| `server.py` | HTTP API, SQLite persistence, auth/RBAC/session/rate-limit enforcement, status-field validations, backup/restore |
+| `seed_admin.py` | One-time/maintenance script to create or reset the initial admin login account |
 | `dashboard_metrics.py` | Dashboard calculations and filtering |
 | `migrations/migrate_inventory_status_json.py` | One-time, idempotent status/condition/archive migration and logging |
 | `test_server.py`, `test_dashboard_metrics.py`, `test_status_validation.py` | Automated tests |
-| `main.css` | Shared styles and theme tokens (`:root` light/dark variables, `color-scheme`, component/surface styling) |
+| `main.css` | Shared styles and theme tokens (`:root` light/dark variables, `color-scheme`, component/surface styling), including auth/login UI |
 
 ## API areas
 
-- `GET /api/bootstrap` and `POST /api/bootstrap`: load app data and one-time legacy browser data migration.
-- `GET /api/users/search`: search managed users.
+- Auth: `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`. Admin-only login-account management: `GET /api/auth/users`, `POST /api/auth/users`, `POST /api/auth/users/reset-password`, `POST /api/auth/users/delete`.
+- `GET /api/bootstrap` and `POST /api/bootstrap`: load app data and one-time legacy browser data migration (authenticated).
+- `GET /api/users/search`: search managed staff users.
 - `GET /api/inventory/available-replacements`: search devices eligible for handout.
 - `GET /api/inventory/assigned-devices`: search active assigned devices, optionally filtered by user ID.
 - `POST /api/checkin-primary-user`: clear a Primary user assignment and append a check-in event.
 - `GET /api/field-options` and `POST /api/field-options`: read and add canonical/legacy field values.
-- `GET /api/health`: report the active SQLite database path and health.
+- `GET /api/health`: report server/database health (unauthenticated).
 - `POST /api/replacement-history/save`: validate and save a replacement event and its new device assignment atomically.
 - `GET /api/dashboard` and `/api/dashboard/records`: dashboard metrics and drill-through rows.
-- Dataset APIs: `PUT /api/inventory` (validates deployment status, condition, disposition method, and `is_archived`), `/api/warranty`, `/api/replacement-history`, `/api/checkout-history`, `/api/users`, `/api/status-labels`, `POST /api/users/staff-type` (set a single user's staff type as a manual override with server-side validation and commit), and `POST /api/users/staff-type/reset` (clear a manual staff-type override and recompute from the user name).
-- `GET /api/backup` and `POST /api/restore`: consistent SQLite backup and validated restore.
+- Dataset APIs: `PUT /api/inventory` (validates deployment status, condition, disposition method, and `is_archived`), `/api/warranty`, `/api/replacement-history`, `/api/checkout-history`, `/api/users` (staff directory; Name optional, User ID required), `/api/status-labels`, `POST /api/users/staff-type` (set a single user's staff type as a manual override with server-side validation and commit), and `POST /api/users/staff-type/reset` (clear a manual staff-type override and recompute from the user name).
+- `GET /api/backup` and `POST /api/restore` (admin-only): consistent SQLite backup and validated restore. `POST /api/clean-database` (admin-only): clears application data while preserving auth tables.
 
 ## Maintenance notes
 
 - Keep operational CSV files, exports, and SQLite databases out of version control.
 - Keep `constants.js` and `constants.py` in sync whenever deployment status, condition, disposition method, or badge colours change.
-- The app has no authentication, roles, audit log, or multi-user synchronization. Keep it on the local machine by default. `NEXIT_HOST`/`NEXIT_PORT` may override the bind for trusted private-network access (for example, Tailscale), but do not expose the server to the internet or untrusted networks without adding appropriate access controls and changing the deployment design.
-- UI/theming: preserve token-driven styling (`main.css` `:root` + `[data-theme="dark"]`, `color-scheme`) and theme-aware chart rendering (`dashboard.js` reads CSS vars and refreshes on `nexit:themechange`) to avoid stale colors/flashes; keep global shell controls (More tools, theme toggle) in `index.html`/`app.js`.
+- NexIT has authentication, RBAC, session timeout, and login rate limiting, but no full audit log or multi-user conflict synchronization. Keep it on trusted/internal networks by default; use HTTPS/TLS for non-local access and do not expose it to the public internet without additional hardening and deployment controls.
+- UI/theming: preserve token-driven styling (`main.css` `:root` + `[data-theme="dark"]`, `color-scheme`) and theme-aware chart rendering (`dashboard.js` reads CSS vars and refreshes on `nexit:themechange`) to avoid stale colors/flashes; keep global shell controls (More tools, theme toggle, logout, login gating) in `index.html`/`app.js`.
 - Run the Python test suite with `python3 -m unittest -v` (Windows: `py -m unittest -v`).
 - When changing UI scripts or styles, update their cache version in `index.html`. Update this brief when a durable data rule, API contract, shell behavior, or major module responsibility changes. Keep user-facing setup and workflow instructions in `README.md`.

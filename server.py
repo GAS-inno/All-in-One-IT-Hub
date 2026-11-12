@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import sys
@@ -12,7 +16,8 @@ import tempfile
 import threading
 import traceback
 from contextlib import closing, contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -35,6 +40,14 @@ MAX_DATABASE_BACKUP_BYTES = 512 * 1024 * 1024
 API_VERSION = "2026-11-07-autocomplete-v1"
 MISSING_IDENTIFIERS = {"n/a", "na", "none", "null", "unknown", "-"}
 _DB_LOCK = threading.RLock()
+
+AUTH_SESSION_COOKIE = "nexit_session"
+AUTH_INACTIVITY_TIMEOUT = timedelta(minutes=30)
+AUTH_SESSION_ABSOLUTE_TIMEOUT = timedelta(hours=12)
+AUTH_PASSWORD_HASH_ITERATIONS = 390000
+AUTH_LOGIN_RATE_LIMIT_WINDOW = timedelta(minutes=15)
+AUTH_LOGIN_RATE_LIMIT_MAX_FAILURES = 10
+AUTH_LOGIN_RATE_LIMIT_LOCKOUT = timedelta(minutes=15)
 ASSET_FIELD_ENUMS = {
     "Replacement Status": ("Not replaced", "Replaced", "Pending replacement", "In progress"),
     "Staff Member Lifecycle Status": ("Active", "Leaver", "Contractor", "Unknown"),
@@ -173,6 +186,55 @@ def normalize_inventory_record_keys(record: dict[str, Any]) -> dict[str, Any]:
 
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_iso() -> str:
+    return _utc_now().replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def hash_password(password: str) -> str:
+    if not isinstance(password, str) or not password:
+        raise ValueError("Password is required.")
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, AUTH_PASSWORD_HASH_ITERATIONS)
+    return "pbkdf2_sha256${}${}${}".format(
+        AUTH_PASSWORD_HASH_ITERATIONS,
+        base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(digest).decode("ascii"),
+    )
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm, iterations_text, salt_b64, digest_b64 = str(encoded or "").split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        iterations = int(iterations_text)
+        salt = base64.b64decode(salt_b64.encode("ascii"))
+        expected = base64.b64decode(digest_b64.encode("ascii"))
+        actual = hashlib.pbkdf2_hmac("sha256", str(password or "").encode("utf-8"), salt, iterations)
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
+
+
 def connect_database(path: Path | None = None) -> sqlite3.Connection:
     path = path or DATABASE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -251,6 +313,42 @@ def connect_database(path: Path | None = None) -> sqlite3.Connection:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS auth_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('admin', 'member')),
+            is_active INTEGER NOT NULL DEFAULT 1,
+            must_change_password INTEGER NOT NULL DEFAULT 0,
+            failed_login_count INTEGER NOT NULL DEFAULT 0,
+            locked_until TEXT,
+            last_login_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_users_username ON auth_users(username COLLATE NOCASE);
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            session_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            ip_address TEXT,
+            user_agent TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at);
+        CREATE TABLE IF NOT EXISTS auth_login_attempts (
+            attempt_key TEXT PRIMARY KEY,
+            username TEXT NOT NULL DEFAULT '',
+            ip_address TEXT NOT NULL DEFAULT '',
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            first_failed_at TEXT,
+            locked_until TEXT,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_locked_until ON auth_login_attempts(locked_until);
         """
     )
     user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
@@ -416,6 +514,155 @@ def database_connection():
         connection.close()
 
 
+def _public_auth_user(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    data = dict(row)
+    return {
+        "id": int(data["id"]),
+        "username": str(data.get("username") or ""),
+        "role": str(data.get("role") or ""),
+        "isActive": bool(data.get("is_active", 1)),
+        "mustChangePassword": bool(data.get("must_change_password", 0)),
+        "lastLoginAt": data.get("last_login_at"),
+        "createdAt": data.get("created_at"),
+        "updatedAt": data.get("updated_at"),
+    }
+
+
+def _normalize_username(username: Any) -> str:
+    return " ".join(str(username or "").strip().split())
+
+
+def _validate_new_password(password: Any) -> str:
+    text = str(password or "")
+    if len(text) < 8:
+        raise ValueError("Password must be at least 8 characters.")
+    return text
+
+
+def _auth_rate_limit_key(username: str, ip_address: str) -> str:
+    return f"{username.casefold()}|{ip_address or 'unknown'}"
+
+
+def _check_login_rate_limit(connection: sqlite3.Connection, username: str, ip_address: str) -> None:
+    key = _auth_rate_limit_key(username, ip_address)
+    row = connection.execute(
+        "SELECT locked_until FROM auth_login_attempts WHERE attempt_key=?",
+        (key,),
+    ).fetchone()
+    if not row or not row["locked_until"]:
+        return
+    locked_until = _parse_iso_datetime(row["locked_until"])
+    if locked_until and locked_until > _utc_now():
+        raise ValueError("Too many failed login attempts. Try again later.")
+    if locked_until:
+        connection.execute(
+            "UPDATE auth_login_attempts SET failed_count=0, locked_until=NULL, updated_at=? WHERE attempt_key=?",
+            (_utc_now_iso(), key),
+        )
+
+
+def _record_login_failure(connection: sqlite3.Connection, username: str, ip_address: str) -> None:
+    key = _auth_rate_limit_key(username, ip_address)
+    now = _utc_now()
+    now_iso = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    row = connection.execute(
+        "SELECT failed_count, first_failed_at, locked_until FROM auth_login_attempts WHERE attempt_key=?",
+        (key,),
+    ).fetchone()
+    failed_count = 1
+    first_failed_at = now_iso
+    if row:
+        locked_until = _parse_iso_datetime(row["locked_until"])
+        existing_first = _parse_iso_datetime(row["first_failed_at"]) or now
+        if locked_until and locked_until > now:
+            failed_count = int(row["failed_count"] or 0)
+            first_failed_at = existing_first.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        elif now - existing_first <= AUTH_LOGIN_RATE_LIMIT_WINDOW:
+            failed_count = int(row["failed_count"] or 0) + 1
+            first_failed_at = existing_first.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    locked_until_value = None
+    if failed_count >= AUTH_LOGIN_RATE_LIMIT_MAX_FAILURES:
+        locked_until_value = (now + AUTH_LOGIN_RATE_LIMIT_LOCKOUT).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    connection.execute(
+        """
+        INSERT INTO auth_login_attempts(attempt_key, username, ip_address, failed_count, first_failed_at, locked_until, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(attempt_key) DO UPDATE SET
+          username=excluded.username,
+          ip_address=excluded.ip_address,
+          failed_count=excluded.failed_count,
+          first_failed_at=excluded.first_failed_at,
+          locked_until=excluded.locked_until,
+          updated_at=excluded.updated_at
+        """,
+        (key, username.casefold(), ip_address or "", failed_count, first_failed_at, locked_until_value, now_iso),
+    )
+
+
+def _clear_login_failures(connection: sqlite3.Connection, username: str, ip_address: str) -> None:
+    key = _auth_rate_limit_key(username, ip_address)
+    connection.execute("DELETE FROM auth_login_attempts WHERE attempt_key=?", (key,))
+
+
+def _create_session(connection: sqlite3.Connection, user_id: int, ip_address: str = "", user_agent: str = "") -> str:
+    session_id = secrets.token_urlsafe(48)
+    now = _utc_now()
+    created_at = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    expires_at = (now + AUTH_SESSION_ABSOLUTE_TIMEOUT).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    connection.execute(
+        """
+        INSERT INTO auth_sessions(session_id, user_id, created_at, last_seen_at, expires_at, revoked_at, ip_address, user_agent)
+        VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+        """,
+        (session_id, int(user_id), created_at, created_at, expires_at, ip_address or "", (user_agent or "")[:512]),
+    )
+    return session_id
+
+
+def _get_session_auth(connection: sqlite3.Connection, session_id: str, *, touch: bool = True) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    row = connection.execute(
+        """
+        SELECT s.session_id, s.user_id, s.created_at, s.last_seen_at, s.expires_at, s.revoked_at,
+               u.id, u.username, u.role, u.is_active, u.must_change_password, u.last_login_at, u.created_at AS user_created_at, u.updated_at
+        FROM auth_sessions s
+        JOIN auth_users u ON u.id = s.user_id
+        WHERE s.session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    now = _utc_now()
+    revoked_at = _parse_iso_datetime(row["revoked_at"])
+    expires_at = _parse_iso_datetime(row["expires_at"])
+    last_seen_at = _parse_iso_datetime(row["last_seen_at"])
+    if revoked_at or not int(row["is_active"] or 0):
+        return None
+    if not expires_at or expires_at <= now:
+        connection.execute("UPDATE auth_sessions SET revoked_at=? WHERE session_id=? AND revoked_at IS NULL", (_utc_now_iso(), session_id))
+        return None
+    if not last_seen_at or now - last_seen_at > AUTH_INACTIVITY_TIMEOUT:
+        connection.execute("UPDATE auth_sessions SET revoked_at=? WHERE session_id=? AND revoked_at IS NULL", (_utc_now_iso(), session_id))
+        return None
+    if touch:
+        connection.execute("UPDATE auth_sessions SET last_seen_at=? WHERE session_id=?", (_utc_now_iso(), session_id))
+    user = {
+        "id": int(row["id"]),
+        "username": str(row["username"] or ""),
+        "role": str(row["role"] or ""),
+        "is_active": int(row["is_active"] or 0),
+        "must_change_password": int(row["must_change_password"] or 0),
+        "last_login_at": row["last_login_at"],
+        "created_at": row["user_created_at"],
+        "updated_at": row["updated_at"],
+    }
+    return {"sessionId": session_id, "user": _public_auth_user(user)}
+
+
 def _create_database_backup() -> Path:
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     descriptor, backup_name = tempfile.mkstemp(prefix="nexit-backup-", suffix=".db", dir=DATABASE_PATH.parent)
@@ -447,10 +694,12 @@ DATABASE_DATA_TABLES = (
 
 
 def _clear_database(connection: sqlite3.Connection) -> int:
+    """Clear application data only. Preserve RBAC/auth accounts and sessions."""
     cleared = 0
     for table in DATABASE_DATA_TABLES:
         cursor = connection.execute(f"DELETE FROM {table}")
         cleared += cursor.rowcount or 0
+    # Remove revoked/expired sessions opportunistically, but keep active auth state intact.
     return cleared
 
 
@@ -883,8 +1132,8 @@ def _replace_users(connection: sqlite3.Connection, records: list[dict[str, Any]]
         user_id = _as_text(record, "UserID").strip()
         name = _as_text(record, "Name").strip()
         email = _as_text(record, "Email").strip()
-        if not user_id or not name:
-            raise ValueError("Every user must include a User ID and Name.")
+        if not user_id:
+            raise ValueError("Every user must include a User ID.")
         if user_id.casefold() in user_ids:
             raise ValueError(f"Duplicate user ID: {user_id}.")
         user_ids.add(user_id.casefold())
@@ -1300,14 +1549,63 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
-    def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+    def _send_json(self, status: int, payload: dict[str, Any], extra_headers: list[tuple[str, str]] | None = None) -> None:
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in extra_headers or []:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _cookie_secure_flag(self) -> bool:
+        return self.headers.get("X-Forwarded-Proto", "").lower() == "https"
+
+    def _session_cookie_header(self, session_id: str, *, clear: bool = False) -> str:
+        parts = [f"{AUTH_SESSION_COOKIE}={'deleted' if clear else session_id}"]
+        parts.append("Path=/")
+        parts.append("HttpOnly")
+        parts.append("SameSite=Lax")
+        if self._cookie_secure_flag():
+            parts.append("Secure")
+        if clear:
+            parts.append("Max-Age=0")
+            parts.append("Expires=Thu, 01 Jan 1970 00:00:00 GMT")
+        return "; ".join(parts)
+
+    def _request_session_id(self) -> str:
+        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        morsel = cookie.get(AUTH_SESSION_COOKIE)
+        return morsel.value if morsel else ""
+
+    def _get_authenticated_user(self, *, touch: bool = True) -> dict[str, Any] | None:
+        session_id = self._request_session_id()
+        if not session_id:
+            return None
+        try:
+            with _DB_LOCK, database_connection() as connection:
+                return _get_session_auth(connection, session_id, touch=touch)
+        except (OSError, sqlite3.Error) as error:
+            self.log_error("Session lookup failed: %s", error)
+            return None
+
+    def _require_auth(self, *, admin: bool = False, touch: bool = True) -> dict[str, Any] | None:
+        auth = self._get_authenticated_user(touch=touch)
+        if auth is None:
+            self._send_json(401, {"error": "Authentication required."}, [("Set-Cookie", self._session_cookie_header("", clear=True))])
+            return None
+        if admin and (auth.get("user") or {}).get("role") != "admin":
+            self._send_json(403, {"error": "Administrator access required."})
+            return None
+        return auth
+
+    def _client_ip(self) -> str:
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()
+        return self.client_address[0] if self.client_address else ""
 
     def _run_json_search(self, label: str, search) -> None:
         try:
@@ -1453,6 +1751,28 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlsplit(self.path)
+
+        if parsed.path == "/api/health":
+            self._send_json(200, {
+                "status": "ok",
+                "database": str(DATABASE_PATH),
+                "apiVersion": API_VERSION,
+                "replacementAutocomplete": True,
+            })
+            return
+
+        if parsed.path == "/api/auth/me":
+            auth = self._get_authenticated_user(touch=True)
+            if auth is None:
+                self._send_json(401, {"authenticated": False, "error": "Authentication required."}, [("Set-Cookie", self._session_cookie_header("", clear=True))])
+                return
+            self._send_json(200, {"authenticated": True, "user": auth["user"]})
+            return
+
+        if parsed.path.startswith("/api/"):
+            if self._require_auth(touch=True) is None:
+                return
+
         if parsed.path == "/api/users/search":
             self._run_json_search("users", lambda: self._search_users(parsed.query))
             return
@@ -1470,13 +1790,18 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                 self.log_error("Field option query failed: %s", error)
                 self._send_json(500, {"error": "Could not load device field options."})
             return
-        if parsed.path == "/api/health":
-            self._send_json(200, {
-                "status": "ok",
-                "database": str(DATABASE_PATH),
-                "apiVersion": API_VERSION,
-                "replacementAutocomplete": True,
-            })
+        if parsed.path == "/api/auth/users":
+            if self._require_auth(admin=True, touch=False) is None:
+                return
+            try:
+                with _DB_LOCK, database_connection() as connection:
+                    rows = connection.execute(
+                        "SELECT id, username, role, is_active, must_change_password, last_login_at, created_at, updated_at FROM auth_users ORDER BY username COLLATE NOCASE"
+                    ).fetchall()
+                self._send_json(200, {"users": [_public_auth_user(row) for row in rows]})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Auth user list failed: %s", error)
+                self._send_json(500, {"error": "Could not load login users."})
             return
         if parsed.path == "/api/backup":
             try:
@@ -1636,7 +1961,155 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:
-        if self.path == "/api/replacement-history/save":
+        parsed = urlsplit(self.path)
+
+        if parsed.path == "/api/auth/login":
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Login payload must be a JSON object.")
+                username = _normalize_username(payload.get("username"))
+                password = str(payload.get("password") or "")
+                if not username or not password:
+                    raise ValueError("Username and password are required.")
+                ip_address = self._client_ip()
+                user_agent = self.headers.get("User-Agent", "")
+                with _DB_LOCK, database_connection() as connection:
+                    _check_login_rate_limit(connection, username, ip_address)
+                    row = connection.execute(
+                        "SELECT id, username, password_hash, role, is_active, must_change_password, last_login_at, created_at, updated_at FROM auth_users WHERE username=? COLLATE NOCASE",
+                        (username,),
+                    ).fetchone()
+                    if row is None or not verify_password(password, row["password_hash"]) or not int(row["is_active"] or 0):
+                        _record_login_failure(connection, username, ip_address)
+                        self._send_json(401, {"error": "Invalid username or password."})
+                        return
+                    _clear_login_failures(connection, username, ip_address)
+                    now_iso = _utc_now_iso()
+                    connection.execute("UPDATE auth_users SET last_login_at=?, updated_at=? WHERE id=?", (now_iso, now_iso, row["id"]))
+                    session_id = _create_session(connection, int(row["id"]), ip_address=ip_address, user_agent=user_agent)
+                    user = _public_auth_user({**dict(row), "last_login_at": now_iso, "updated_at": now_iso})
+                self._send_json(200, {"authenticated": True, "user": user}, [("Set-Cookie", self._session_cookie_header(session_id))])
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Login failed: %s", error)
+                self._send_json(500, {"error": "Could not complete login."})
+            return
+
+        if parsed.path == "/api/auth/logout":
+            session_id = self._request_session_id()
+            try:
+                if session_id:
+                    with _DB_LOCK, database_connection() as connection:
+                        connection.execute("UPDATE auth_sessions SET revoked_at=? WHERE session_id=? AND revoked_at IS NULL", (_utc_now_iso(), session_id))
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Logout failed: %s", error)
+            self._send_json(200, {"authenticated": False}, [("Set-Cookie", self._session_cookie_header("", clear=True))])
+            return
+
+        if parsed.path.startswith("/api/"):
+            auth = self._require_auth(touch=True)
+            if auth is None:
+                return
+
+        admin_only_post_paths = {"/api/restore", "/api/clean-database", "/api/auth/users", "/api/auth/users/reset-password", "/api/auth/users/delete"}
+        if parsed.path in admin_only_post_paths:
+            if self._require_auth(admin=True, touch=False) is None:
+                return
+
+        if parsed.path == "/api/auth/users":
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("User payload must be a JSON object.")
+                username = _normalize_username(payload.get("username"))
+                password = _validate_new_password(payload.get("password"))
+                role = str(payload.get("role") or "").strip().lower()
+                if role not in {"admin", "member"}:
+                    raise ValueError("Role must be 'admin' or 'member'.")
+                now_iso = _utc_now_iso()
+                with _DB_LOCK, database_connection() as connection:
+                    existing = connection.execute("SELECT 1 FROM auth_users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
+                    if existing:
+                        raise ValueError("Username already exists.")
+                    connection.execute(
+                        "INSERT INTO auth_users(username, password_hash, role, is_active, must_change_password, failed_login_count, created_at, updated_at) VALUES (?, ?, ?, 1, 0, 0, ?, ?)",
+                        (username, hash_password(password), role, now_iso, now_iso),
+                    )
+                    row = connection.execute(
+                        "SELECT id, username, role, is_active, must_change_password, last_login_at, created_at, updated_at FROM auth_users WHERE username=? COLLATE NOCASE",
+                        (username,),
+                    ).fetchone()
+                self._send_json(200, {"user": _public_auth_user(row)})
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Auth user create failed: %s", error)
+                self._send_json(500, {"error": "Could not create login user."})
+            return
+
+        if parsed.path == "/api/auth/users/reset-password":
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Reset payload must be a JSON object.")
+                user_id = int(payload.get("id") or 0)
+                password = _validate_new_password(payload.get("password"))
+                if user_id <= 0:
+                    raise ValueError("A valid user id is required.")
+                now_iso = _utc_now_iso()
+                with _DB_LOCK, database_connection() as connection:
+                    row = connection.execute("SELECT id FROM auth_users WHERE id=?", (user_id,)).fetchone()
+                    if row is None:
+                        self._send_json(404, {"error": "User not found."})
+                        return
+                    connection.execute(
+                        "UPDATE auth_users SET password_hash=?, must_change_password=0, updated_at=? WHERE id=?",
+                        (hash_password(password), now_iso, user_id),
+                    )
+                    # Revoke existing sessions for security after password reset.
+                    connection.execute("UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now_iso, user_id))
+                self._send_json(200, {"reset": True})
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Auth user password reset failed: %s", error)
+                self._send_json(500, {"error": "Could not reset password."})
+            return
+
+        if parsed.path == "/api/auth/users/delete":
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Delete payload must be a JSON object.")
+                user_id = int(payload.get("id") or 0)
+                if user_id <= 0:
+                    raise ValueError("A valid user id is required.")
+                current_user_id = int((auth.get("user") or {}).get("id") or 0)
+                if user_id == current_user_id:
+                    raise ValueError("You cannot delete your own account.")
+                now_iso = _utc_now_iso()
+                with _DB_LOCK, database_connection() as connection:
+                    row = connection.execute("SELECT id FROM auth_users WHERE id=?", (user_id,)).fetchone()
+                    if row is None:
+                        self._send_json(404, {"error": "User not found."})
+                        return
+                    # Soft delete for auditability.
+                    connection.execute(
+                        "UPDATE auth_users SET is_active=0, username=username || ? || ?, updated_at=? WHERE id=?",
+                        ("__deleted__", str(user_id), now_iso, user_id),
+                    )
+                    connection.execute("UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now_iso, user_id))
+                self._send_json(200, {"deleted": True})
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Auth user delete failed: %s", error)
+                self._send_json(500, {"error": "Could not delete user."})
+            return
+
+        if parsed.path == "/api/replacement-history/save":
             try:
                 payload = self._read_json()
                 with _DB_LOCK, database_connection() as connection:
@@ -1653,7 +2126,7 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                 self.log_error("Replacement record save failed: %s", error)
                 self._send_json(500, {"error": "Could not save replacement record and update device assignment."})
             return
-        if self.path == "/api/restore":
+        if parsed.path == "/api/restore":
             upload_path = None
             try:
                 upload_path = self._read_backup_upload()
@@ -1669,7 +2142,7 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
                 if upload_path is not None:
                     upload_path.unlink(missing_ok=True)
             return
-        if self.path == "/api/clean-database":
+        if parsed.path == "/api/clean-database":
             try:
                 with _DB_LOCK, database_connection() as connection:
                     cleared = _clear_database(connection)
@@ -1854,6 +2327,9 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
             self._send_json(500, {"error": "Could not initialize or read the SQLite database."})
 
     def do_PUT(self) -> None:
+        if self.path.startswith("/api/"):
+            if self._require_auth(touch=True) is None:
+                return
         table = {
             "/api/inventory": "inventory",
             "/api/warranty": "warranty",

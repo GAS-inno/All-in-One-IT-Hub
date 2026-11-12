@@ -1460,3 +1460,59 @@ button.dashboard-kpi:focus-visible { outline: 3px solid var(--accent-glow); outl
 .column-drawer.users-filter-drawer .column-drawer-header strong { font-size: 15px; }
 .column-drawer.users-filter-drawer .form-control { width: 100%; }
 .column-drawer.users-filter-drawer .column-drawer-footer { bottom: -16px; margin: auto -16px -16px; padding: 12px 16px; }
+
+/* ============================================
+   AUTH / LOGIN
+   ============================================ */
+.auth-overlay[hidden] { display: none !important; }
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(10, 12, 16, 0.72);
+  backdrop-filter: blur(6px);
+}
+[data-theme="light"] .auth-overlay { background: rgba(243, 246, 250, 0.85); }
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 24px;
+  display: grid;
+  gap: 14px;
+}
+.auth-brand { display: flex; align-items: center; gap: 12px; }
+.auth-title { font-size: 22px; font-weight: 800; letter-spacing: 1px; }
+.auth-subtitle { color: var(--text-muted); font-size: 13px; }
+.auth-note { color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+.auth-field { display: grid; gap: 6px; font-size: 13px; color: var(--text-secondary); }
+.auth-field input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-light);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+}
+.auth-field input:focus { outline: 2px solid var(--accent-glow); border-color: var(--accent); }
+.auth-error { min-height: 20px; color: var(--red); font-size: 13px; }
+.auth-submit { width: 100%; justify-content: center; }
+#appShellLocked { display: none; }
+.access-admin-grid { display: grid; gap: 16px; }
+.access-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; align-items: end; }
+.access-form label { display: grid; gap: 6px; font-size: 13px; color: var(--text-secondary); }
+.access-form input, .access-form select {
+  width: 100%; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-light);
+  background: var(--bg-surface); color: var(--text-primary); font: inherit;
+}
+.access-table-wrap { overflow: auto; }
+.access-inline-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.muted { color: var(--text-muted); }

@@ -423,10 +423,13 @@ App.registerModule('inventory', (() => {
 
   async function downloadDatabaseBackup() {
     try {
-      const response = await fetch('/api/backup');
+      const response = await fetch('/api/backup', { credentials: 'same-origin' });
+      if (response.status === 401) { window.dispatchEvent(new CustomEvent('nexit:auth-required')); throw new Error('Authentication required.'); }
+      if (response.status === 403) { throw new Error('Administrator access required.'); }
       if (!response.ok) {
-        const result = await response.json();
-        throw new Error(result.error || `HTTP ${response.status}`);
+        let message = `HTTP ${response.status}`;
+        try { const result = await response.json(); message = result.error || message; } catch {}
+        throw new Error(message);
       }
       const blob = await response.blob();
       const filename = response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]
@@ -459,9 +462,11 @@ App.registerModule('inventory', (() => {
           const response = await fetch('/api/restore', {
             method: 'POST',
             headers: { 'Content-Type': 'application/octet-stream' },
+            credentials: 'same-origin',
             body: await file.arrayBuffer()
           });
-          const result = await response.json();
+          const result = await response.json().catch(() => ({}));
+          if (response.status === 401) { window.dispatchEvent(new CustomEvent('nexit:auth-required')); throw new Error('Authentication required.'); }
           if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
           Modal.close();
           Toast.show('Database restored. Reloading NexIT…', 'success', 5000);
@@ -479,14 +484,16 @@ App.registerModule('inventory', (() => {
       title: 'Clean database?',
       confirmText: 'Clean database',
       onOpen: () => { document.getElementById('modalConfirm').className = 'btn btn-danger'; },
-      body: `<p><strong>This permanently deletes all NexIT data</strong> currently stored in the local SQLite database, including inventory, warranty, replacement history, checkout/check-in history, and users.</p>
-        <p>The app will reload afterwards. Download a backup first if you want to keep a copy.</p>`,
+      body: `<p><strong>This permanently deletes NexIT application data</strong> currently stored in the local SQLite database, including inventory, warranty, replacement history, checkout/check-in history, and staff/user records.</p>
+        <p>Login accounts and access sessions are preserved. The app will reload afterwards. Download a backup first if you want to keep a copy.</p>`,
       onConfirm: async () => {
         const confirmButton = document.getElementById('modalConfirm');
         confirmButton.disabled = true;
         try {
-          const response = await fetch('/api/clean-database', { method: 'POST' });
-          const result = await response.json();
+          const response = await fetch('/api/clean-database', { method: 'POST', credentials: 'same-origin' });
+          const result = await response.json().catch(() => ({}));
+          if (response.status === 401) { window.dispatchEvent(new CustomEvent('nexit:auth-required')); throw new Error('Authentication required.'); }
+          if (response.status === 403) { throw new Error('Administrator access required.'); }
           if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
           Modal.close();
           Toast.show(`Database cleared. Removed ${result.cleared ?? 0} records. Reloading NexIT…`, 'success', 5000);

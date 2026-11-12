@@ -17,6 +17,54 @@ const App = {
   currentModule: 'dashboard',
   countryFilter: 'all',
   fieldOptions: {},
+  auth: {
+    user: null,
+    async request(path, options = {}) {
+      const response = await fetch(path, { credentials: 'same-origin', ...options });
+      const contentType = response.headers.get('Content-Type') || '';
+      const payload = contentType.includes('application/json') ? await response.json().catch(() => ({})) : null;
+      if (!response.ok) {
+        const error = new Error((payload && payload.error) || `HTTP ${response.status}`);
+        error.status = response.status;
+        error.payload = payload;
+        throw error;
+      }
+      return payload;
+    },
+    async me() {
+      try {
+        const result = await fetch('/api/auth/me', { credentials: 'same-origin' });
+        const payload = await result.json().catch(() => ({}));
+        if (!result.ok || !payload.authenticated) {
+          this.user = null;
+          return null;
+        }
+        this.user = payload.user || null;
+        return this.user;
+      } catch {
+        this.user = null;
+        return null;
+      }
+    },
+    async login(username, password) {
+      const payload = await this.request('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      this.user = payload.user || null;
+      return this.user;
+    },
+    async logout() {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+      } catch {}
+      this.user = null;
+    },
+    isAdmin() {
+      return this.user?.role === 'admin';
+    }
+  },
 
   // Inventory, warranty, replacement, and checkout histories are persisted by the local SQLite API.
   store: {
@@ -52,8 +100,9 @@ const App = {
       }[key];
       const previousWrite = this.writeQueues.get(key) || Promise.resolve();
       const write = previousWrite.catch(() => {}).then(async () => {
-        const response = await fetch(route, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
-        const result = await response.json();
+        const response = await fetch(route, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body });
+        const result = await response.json().catch(() => ({}));
+        if (response.status === 401) window.dispatchEvent(new CustomEvent('nexit:auth-required'));
         if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
         return result;
       });
@@ -76,9 +125,11 @@ const App = {
       const response = await fetch('/api/checkin-primary-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
         body: JSON.stringify({ inventory, checkoutHistory })
       });
-      const result = await response.json();
+      const result = await response.json().catch(() => ({}));
+      if (response.status === 401) window.dispatchEvent(new CustomEvent('nexit:auth-required'));
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       this.cache.set('inventory', inventory);
       this.cache.set('checkoutHistory', checkoutHistory);
@@ -96,10 +147,14 @@ const App = {
         }
       };
       const response = await fetch('/api/bootstrap', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
         body: JSON.stringify({ inventory: readLegacy('inventory'), warranty: readLegacy('warranty') })
       });
-      const result = await response.json();
+      const result = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        window.dispatchEvent(new CustomEvent('nexit:auth-required'));
+        throw new Error(result.error || 'Authentication required.');
+      }
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       if (!Array.isArray(result.inventory) || !Array.isArray(result.warranty)
         || !Array.isArray(result.replacementHistory) || !Array.isArray(result.checkoutHistory)
@@ -118,10 +173,11 @@ const App = {
     },
     async refreshUsers() {
       const response = await fetch('/api/bootstrap', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
         body: JSON.stringify({})
       });
-      const result = await response.json();
+      const result = await response.json().catch(() => ({}));
+      if (response.status === 401) window.dispatchEvent(new CustomEvent('nexit:auth-required'));
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       if (Array.isArray(result.users)) this.cache.set('users', result.users);
       if (result.fieldOptions) this.fieldOptions = result.fieldOptions;
@@ -137,6 +193,7 @@ const App = {
   },
 
   navigateTo(moduleName) {
+    if (moduleName === 'access' && !this.auth.isAdmin()) moduleName = 'dashboard';
     if (!this.modules[moduleName]) { console.warn('Module not found:', moduleName); return; }
 
     const previousModule = this.modules[this.currentModule];
@@ -598,20 +655,259 @@ document.addEventListener('DOMContentLoaded', () => {
     if (dropdown && dropdown.open && !dropdown.contains(event.target)) dropdown.open = false;
   });
   // Backdrop clicks intentionally do not dismiss open forms; use the explicit controls above.
-  // Load inventory from SQLite before rendering any module.
-  App.store.initialize().then(() => {
-    App.modules.inventory?.refreshDeviceTypeNavigation?.();
-    updateGlobalCountryFlag();
-    App.navigateTo('dashboard');
-  }).catch((error) => {
-    console.error('Could not connect to the local SQLite server.', error);
-    const safeMessage = String(error.message || error).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-    document.getElementById('moduleContainer').innerHTML = `
-      <div class="card dashboard-info-card">
-        <div class="card-header"><span class="card-title">SQLite server unavailable</span></div>
-        <p>${safeMessage}</p>
-        <p>Start the app with <code>python3 server.py</code> on Linux or <code>py server.py</code> on Windows, then reload this page.</p>
-      </div>`;
+  const authOverlay = document.getElementById('authOverlay');
+  const loginForm = document.getElementById('loginForm');
+  const loginError = document.getElementById('loginError');
+  const loginSubmit = document.getElementById('loginSubmit');
+  const logoutBtn = document.getElementById('logoutBtn');
+  const appShell = document.querySelector('.sidebar, .sidebar-overlay, .main-content');
+  const shellNodes = [document.getElementById('sidebar'), document.getElementById('sidebarOverlay'), document.getElementById('mainContent')].filter(Boolean);
+
+  function setShellVisible(visible) {
+    shellNodes.forEach(node => { node.hidden = !visible; });
+    if (authOverlay) authOverlay.hidden = visible;
+  }
+
+  function applyAuthUI() {
+    const user = App.auth.user;
+    const isAdmin = App.auth.isAdmin();
+    const accessNav = document.getElementById('accessNavItem');
+    const cleanBtn = document.getElementById('globalCleanDatabaseBtn');
+    const restoreBtn = document.getElementById('globalRestoreDatabaseBtn');
+    if (accessNav) accessNav.hidden = !isAdmin;
+    if (logoutBtn) logoutBtn.hidden = !user;
+    if (cleanBtn) cleanBtn.hidden = !isAdmin;
+    if (restoreBtn) restoreBtn.hidden = !isAdmin;
+    const avatar = document.getElementById('sidebarUserAvatar');
+    const name = document.getElementById('sidebarUserName');
+    const role = document.getElementById('sidebarUserRole');
+    if (user) {
+      if (avatar) avatar.textContent = (user.username || 'IT').slice(0, 2).toUpperCase();
+      if (name) name.textContent = user.username || 'User';
+      if (role) role.textContent = isAdmin ? 'Administrator' : 'Member';
+    } else {
+      if (avatar) avatar.textContent = 'IT';
+      if (name) name.textContent = '—';
+      if (role) role.textContent = 'Not signed in';
+    }
+  }
+
+  async function startAuthenticatedApp() {
+    applyAuthUI();
+    setShellVisible(true);
+    try {
+      if (!App.store.initialized) await App.store.initialize();
+      App.modules.inventory?.refreshDeviceTypeNavigation?.();
+      updateGlobalCountryFlag();
+      const target = App.auth.isAdmin() ? App.currentModule : (App.currentModule === 'access' ? 'dashboard' : App.currentModule);
+      App.navigateTo(target || 'dashboard');
+    } catch (error) {
+      console.error('Could not connect to the local SQLite server.', error);
+      const safeMessage = String(error.message || error).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+      document.getElementById('moduleContainer').innerHTML = `
+        <div class="card dashboard-info-card">
+          <div class="card-header"><span class="card-title">Application unavailable</span></div>
+          <p>${safeMessage}</p>
+          <p>Ensure the NexIT server is running and try again.</p>
+        </div>`;
+    }
+  }
+
+  async function showLogin(message = '') {
+    App.auth.user = null;
+    App.store.initialized = false;
+    App.store.cache.clear();
+    applyAuthUI();
+    setShellVisible(false);
+    if (loginError) loginError.textContent = message;
+    document.getElementById('moduleContainer').innerHTML = '';
+    loginForm?.reset();
+    document.getElementById('loginUsername')?.focus();
+  }
+
+  loginForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (loginSubmit) loginSubmit.disabled = true;
+    if (loginError) loginError.textContent = '';
+    try {
+      const username = document.getElementById('loginUsername')?.value || '';
+      const password = document.getElementById('loginPassword')?.value || '';
+      await App.auth.login(username, password);
+      await startAuthenticatedApp();
+    } catch (error) {
+      if (loginError) loginError.textContent = error.message || 'Login failed.';
+    } finally {
+      if (loginSubmit) loginSubmit.disabled = false;
+    }
   });
 
+  logoutBtn?.addEventListener('click', async () => {
+    await App.auth.logout();
+    await showLogin('You have been signed out.');
+  });
+
+  // Intercept 401s from store writes/reads by wrapping fetch usage is complex; handle on init and expose helper.
+  window.addEventListener('nexit:auth-required', () => showLogin('Your session expired. Please sign in again.'));
+
+  (async () => {
+    const user = await App.auth.me();
+    if (user) {
+      await startAuthenticatedApp();
+    } else {
+      await showLogin();
+    }
+  })();
+
 });
+
+App.registerModule('access', (() => {
+  let cachedUsers = [];
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+  }
+
+  async function api(path, options = {}) {
+    const response = await fetch(path, { credentials: 'same-origin', ...options });
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401) window.dispatchEvent(new CustomEvent('nexit:auth-required'));
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    return payload;
+  }
+
+  async function loadUsers() {
+    const result = await api('/api/auth/users');
+    cachedUsers = Array.isArray(result.users) ? result.users : [];
+    return cachedUsers;
+  }
+
+  function renderTable(users) {
+    const currentId = App.auth.user?.id;
+    if (!users.length) return '<p class="muted">No login accounts found.</p>';
+    return `<div class="access-table-wrap"><table class="data-table"><thead><tr>
+      <th>Username</th><th>Role</th><th>Status</th><th>Last login</th><th>Created</th><th>Actions</th>
+    </tr></thead><tbody>${users.map(user => {
+      const isSelf = Number(user.id) === Number(currentId);
+      const status = user.isActive ? 'Active' : 'Disabled';
+      const actions = user.isActive ? `
+        <div class="access-inline-actions">
+          <button type="button" class="btn btn-secondary btn-sm" data-action="reset" data-id="${user.id}" data-username="${escapeHtml(user.username)}">Reset password</button>
+          <button type="button" class="btn btn-danger btn-sm" data-action="delete" data-id="${user.id}" data-username="${escapeHtml(user.username)}" ${isSelf ? 'disabled title="You cannot delete your own account."' : ''}>Delete</button>
+        </div>` : '<span class="muted">Deleted/disabled</span>';
+      return `<tr>
+        <td>${escapeHtml(user.username)}${isSelf ? ' <span class="badge">You</span>' : ''}</td>
+        <td>${escapeHtml(user.role)}</td>
+        <td>${status}</td>
+        <td>${escapeHtml(user.lastLoginAt || '—')}</td>
+        <td>${escapeHtml(user.createdAt || '—')}</td>
+        <td>${actions}</td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+  }
+
+  async function render() {
+    if (!App.auth.isAdmin()) {
+      document.getElementById('moduleContainer').innerHTML = '<div class="card"><p>Administrator access required.</p></div>';
+      return;
+    }
+    const container = document.getElementById('moduleContainer');
+    container.innerHTML = `
+      <div class="access-admin-grid">
+        <section class="card">
+          <div class="card-header"><span class="card-title">Create login account</span></div>
+          <p class="muted">Admins create internal accounts. No public signup. Members can use all app features except Clean Database and User Management.</p>
+          <form id="createAuthUserForm" class="access-form">
+            <label>Username<input name="username" type="text" required autocomplete="off" /></label>
+            <label>Role<select name="role" required><option value="member">member</option><option value="admin">admin</option></select></label>
+            <label>Temporary password<input name="password" type="password" minlength="8" required autocomplete="new-password" /></label>
+            <button type="submit" class="btn btn-primary">Create user</button>
+          </form>
+        </section>
+        <section class="card">
+          <div class="card-header"><span class="card-title">Login accounts</span></div>
+          <div id="authUsersTable"></div>
+        </section>
+      </div>`;
+    await refresh();
+    bind();
+  }
+
+  async function refresh() {
+    const table = document.getElementById('authUsersTable');
+    if (!table) return;
+    table.innerHTML = '<p class="muted">Loading…</p>';
+    try {
+      const users = await loadUsers();
+      table.innerHTML = renderTable(users);
+    } catch (error) {
+      table.innerHTML = `<p class="auth-error">${escapeHtml(error.message || 'Could not load users.')}</p>`;
+    }
+  }
+
+  function bind() {
+    document.getElementById('createAuthUserForm')?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const data = new FormData(form);
+      try {
+        await api('/api/auth/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: data.get('username'), role: data.get('role'), password: data.get('password') })
+        });
+        form.reset();
+        Toast.show('Login account created.', 'success');
+        await refresh();
+      } catch (error) {
+        Toast.show(error.message || 'Could not create user.', 'error', 6000);
+      }
+    });
+
+    document.getElementById('authUsersTable')?.addEventListener('click', async (event) => {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      const id = Number(button.dataset.id);
+      const username = button.dataset.username || '';
+      if (button.dataset.action === 'reset') {
+        Modal.open({
+          title: `Reset password: ${username}`,
+          confirmText: 'Reset password',
+          body: `<label class="auth-field"><span>New password (min 8 chars)</span><input id="resetAuthPassword" type="password" minlength="8" autocomplete="new-password" /></label>`,
+          onConfirm: async () => {
+            const password = document.getElementById('resetAuthPassword')?.value || '';
+            if (password.length < 8) { Toast.show('Password must be at least 8 characters.', 'error'); return; }
+            try {
+              await api('/api/auth/users/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, password }) });
+              Modal.close();
+              Toast.show('Password reset. Existing sessions were revoked.', 'success', 5000);
+              await refresh();
+            } catch (error) {
+              Toast.show(error.message || 'Could not reset password.', 'error', 6000);
+            }
+          }
+        });
+        return;
+      }
+      if (button.dataset.action === 'delete') {
+        Modal.open({
+          title: `Delete login account: ${username}`,
+          confirmText: 'Delete user',
+          onOpen: () => { const c = document.getElementById('modalConfirm'); if (c) c.className = 'btn btn-danger'; },
+          body: `<p>This will disable the login account for <strong>${escapeHtml(username)}</strong> and revoke active sessions.</p>`,
+          onConfirm: async () => {
+            try {
+              await api('/api/auth/users/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+              Modal.close();
+              Toast.show('User disabled.', 'success');
+              await refresh();
+            } catch (error) {
+              Toast.show(error.message || 'Could not delete user.', 'error', 6000);
+            }
+          }
+        });
+      }
+    });
+  }
+
+  return { render, init: render, refresh };
+})());
