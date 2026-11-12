@@ -552,10 +552,10 @@ App.registerModule('users', (() => {
           <input id="userFilterEmail" class="form-control" type="email" placeholder="Partial email..." value="${escapeHtml(userFilterEmail)}" />
           <label class="duplicate-filter-option" for="userFilterStaffType">Staff Type</label>
           <select id="userFilterStaffType" class="form-control" aria-label="Staff Type">
-            <option value="all">All staff types</option>
+            <option value="all" ${userStaffTypeFilter === 'all' ? 'selected' : ''}>All staff types</option>
             <option value="External Staff" ${userStaffTypeFilter === 'External Staff' ? 'selected' : ''}>External Staff</option>
             <option value="Internal Staff" ${userStaffTypeFilter === 'Internal Staff' ? 'selected' : ''}>Internal Staff</option>
-            <option value="" ${!userStaffTypeFilter || userStaffTypeFilter === '' ? 'selected' : ''}>Unclassified</option>
+            <option value="" ${userStaffTypeFilter === '' ? 'selected' : ''}>Unclassified</option>
           </select>
           <label class="duplicate-filter-option" for="userFilterAccountActive">Account Active</label>
           <select id="userFilterAccountActive" class="form-control" aria-label="Account Active">
@@ -578,10 +578,10 @@ App.registerModule('users', (() => {
         <input id="usersSearch" class="search-input" placeholder="Search users by name or email..." value="${escapeHtml(userSearch)}" />
         <input id="userAssetCountFilter" class="search-input" type="number" min="0" placeholder="Assigned assets (count)" value="${escapeHtml(userAssetCountFilter)}" />
         <select id="userStaffTypeFilter" class="search-input" aria-label="Filter users by staff type">
-          <option value="all">All staff types</option>
-          <option value="External Staff">External Staff</option>
-          <option value="Internal Staff">Internal Staff</option>
-          <option value="">Unclassified</option>
+          <option value="all" ${userStaffTypeFilter === 'all' ? 'selected' : ''}>All staff types</option>
+          <option value="External Staff" ${userStaffTypeFilter === 'External Staff' ? 'selected' : ''}>External Staff</option>
+          <option value="Internal Staff" ${userStaffTypeFilter === 'Internal Staff' ? 'selected' : ''}>Internal Staff</option>
+          <option value="" ${userStaffTypeFilter === '' ? 'selected' : ''}>Unclassified</option>
         </select>
       </div>
       <input id="usersFileInput" type="file" accept=".csv,text/csv" hidden />
