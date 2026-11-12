@@ -1591,6 +1591,7 @@ App.registerModule('inventory', (() => {
     const primaryUser = getPrimaryUser(device);
     const deviceLabel = device['Device name'] || device['Serial number'] || device['Device ID'] || 'device';
     const staffOptions = App.modules.users?.checkoutOptions?.() || [];
+    const eventTimeValue = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`;
     Modal.open({
       title: `Check in ${deviceLabel}`,
       confirmText: 'Check in',
@@ -1603,6 +1604,14 @@ App.registerModule('inventory', (() => {
         <div class="form-group form-grid-full">
           <label class="form-label" for="checkinStaffEmail">Staff email</label>
           <input class="form-control" id="checkinStaffEmail" name="staffEmail" type="email" list="primaryCheckinStaffSuggestions" autocomplete="email" value="${escapeHtml(primaryUser?.email || '')}" />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="primaryCheckinEventDate">Check-in date <span class="required">*</span></label>
+          <input class="form-control" id="primaryCheckinEventDate" name="eventDate" type="date" required value="${getTodayDate()}" />
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="primaryCheckinEventTime">Check-in time</label>
+          <input class="form-control" id="primaryCheckinEventTime" name="eventTime" type="time" value="${eventTimeValue}" />
         </div>
         ${staffSuggestions(staffOptions, 'primaryCheckinStaffSuggestions')}
       </form>`,
@@ -1623,8 +1632,8 @@ App.registerModule('inventory', (() => {
           'Device name': String(device['Device name'] || ''),
           'Serial number': String(device['Serial number'] || device['IntuneGroup.SerialNumber'] || ''),
           'Event type': 'checkin',
-          'Event date': getTodayDate(),
-          'Event time': `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`,
+          'Event date': String(values.get('eventDate') || getTodayDate()),
+          'Event time': String(values.get('eventTime') || ''),
           'Staff name': String(values.get('staffName') || '').trim(),
           'Staff email': String(values.get('staffEmail') || '').trim(),
           'Staff country': primaryUser?.country || '',
