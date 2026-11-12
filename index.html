@@ -3,10 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark light" />
   <title>NexIT — IT Asset Inventory</title>
+  <script>
+    (function () {
+      try {
+        var stored = localStorage.getItem('nexit-theme');
+        var theme = (stored === 'light' || stored === 'dark')
+          ? stored
+          : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.style.colorScheme = theme;
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        document.documentElement.style.colorScheme = 'dark';
+      }
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="main.css?v=33" />
+  <link rel="stylesheet" href="main.css?v=34" />
 </head>
 <body>
 
@@ -83,6 +99,7 @@
         <option value="PH">Philippines</option>
         <option value="JP">Japan</option>
       </select>
+      <button type="button" class="btn btn-secondary btn-sm theme-toggle" id="themeToggle" aria-label="Toggle color theme" title="Toggle color theme">Theme</button>
       <details class="inventory-settings-dropdown global-more-tools" id="globalMoreTools">
         <summary class="btn btn-secondary btn-sm" aria-label="More tools">More tools</summary>
         <div class="inventory-settings-menu" aria-label="More tools">
@@ -126,8 +143,8 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js" defer></script>
 <script src="country-flags.js?v=1" defer></script>
-<script src="app.js?v=21" defer></script>
-<script src="dashboard.js?v=18" defer></script>
+<script src="app.js?v=22" defer></script>
+<script src="dashboard.js?v=19" defer></script>
 <script src="constants.js?v=1" defer></script>
 <script src="inventory.js?v=56" defer></script>
 <script src="users.js?v=17" defer></script>

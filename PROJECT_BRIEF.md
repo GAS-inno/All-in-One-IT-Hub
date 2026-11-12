@@ -1,6 +1,6 @@
 # Project Brief
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-12
 
 ## Purpose
 
@@ -9,9 +9,11 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 ## Architecture
 
 - Frontend: vanilla JavaScript, HTML, and CSS; no build step. UI typography uses Inter loaded from Google Fonts.
+- Theming: CSS custom properties on `:root` with `[data-theme="dark"]` overrides (light/dark), `color-scheme` for native controls/scrollbars, a pre-paint inline `<head>` script in `index.html` to avoid flash, global theme toggle next to **More tools** (persisted in `localStorage`, respects `prefers-color-scheme` on first load), and `nexit:themechange` events so dashboard charts re-read theme tokens.
 - Backend: Python standard library (`http.server`, `sqlite3`); no external Python packages.
 - Storage: SQLite database at the platform's local application-data directory. `server.py` prints the active path and `/api/health` reports it.
-- Dashboard charts use Chart.js from jsDelivr; internet access is needed for those charts.
+- Dashboard charts use Chart.js from jsDelivr; internet access is needed for those charts. Chart colors/options are derived from theme CSS variables and refreshed on theme toggle.
+- Global app shell: **More tools** in the topbar is persistent across pages with fixed actions **Backup Database, Restore Database, Clean Database, Export CSV, Import CSV**; Export/Import use source-aware choosers (Asset Inventory/User list, active/all or existing import flow) and reuse module handlers.
 - Start from the project directory with `python3 server.py` (Linux/macOS) or `py server.py` (Windows). The server binds to `127.0.0.1:8000` by default; `NEXIT_HOST` and `NEXIT_PORT` can override the bind for trusted private-network access (e.g. Tailscale). NexIT has no authentication.
 
 ## Data ownership and rules
@@ -53,18 +55,18 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 
 | File | Responsibility |
 |---|---|
-| `index.html` | Page shell, navigation, and script loading |
-| `app.js` | App state, API-backed store, navigation, dialogs, shared helpers |
+| `index.html` | Page shell, navigation, global More tools/theme toggle, pre-paint theme bootstrap, and script loading |
+| `app.js` | App state, API-backed store, navigation, dialogs, shared helpers, global More tools routing, theme persistence/toggle |
 | `constants.js`, `constants.py` | Shared deployment status, condition, disposition-method, and badge-colour lists (kept in sync) |
-| `inventory.js` | Inventory UI, filter drawer, import/export, structured device forms, staff autocomplete, checkout/check-in history, status labels, backup/restore |
-| `users.js` | Staff directory and per-user assigned assets |
+| `inventory.js` | Inventory UI, filter drawer, import/export flows, structured device forms, staff autocomplete, checkout/check-in history, status labels, reusable backup/restore/clean handlers |
+| `users.js` | Staff directory, user CSV import/export flows, and per-user assigned assets |
 | `replacement-history.js` | Replacement history UI, linked autocomplete, CSV transfer |
-| `dashboard.js` | Dashboard filters, charts, and inventory drill-through |
+| `dashboard.js` | Dashboard filters, charts, inventory drill-through; derives chart colors/options from theme tokens and refreshes on `nexit:themechange` |
 | `server.py` | HTTP API, SQLite persistence, status-field validations, backup/restore |
 | `dashboard_metrics.py` | Dashboard calculations and filtering |
 | `migrations/migrate_inventory_status_json.py` | One-time, idempotent status/condition/archive migration and logging |
 | `test_server.py`, `test_dashboard_metrics.py`, `test_status_validation.py` | Automated tests |
-| `main.css` | Shared styles |
+| `main.css` | Shared styles and theme tokens (`:root` light/dark variables, `color-scheme`, component/surface styling) |
 
 ## API areas
 
@@ -85,5 +87,6 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 - Keep operational CSV files, exports, and SQLite databases out of version control.
 - Keep `constants.js` and `constants.py` in sync whenever deployment status, condition, disposition method, or badge colours change.
 - The app has no authentication, roles, audit log, or multi-user synchronization. Keep it on the local machine by default. `NEXIT_HOST`/`NEXIT_PORT` may override the bind for trusted private-network access (for example, Tailscale), but do not expose the server to the internet or untrusted networks without adding appropriate access controls and changing the deployment design.
+- UI/theming: preserve token-driven styling (`main.css` `:root` + `[data-theme="dark"]`, `color-scheme`) and theme-aware chart rendering (`dashboard.js` reads CSS vars and refreshes on `nexit:themechange`) to avoid stale colors/flashes; keep global shell controls (More tools, theme toggle) in `index.html`/`app.js`.
 - Run the Python test suite with `python3 -m unittest -v` (Windows: `py -m unittest -v`).
-- When changing UI scripts or styles, update their cache version in `index.html`. Update this brief when a durable data rule, API contract, or major module responsibility changes. Keep user-facing setup and workflow instructions in `README.md`.
+- When changing UI scripts or styles, update their cache version in `index.html`. Update this brief when a durable data rule, API contract, shell behavior, or major module responsibility changes. Keep user-facing setup and workflow instructions in `README.md`.

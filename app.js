@@ -386,6 +386,44 @@ function confirmDelete(itemName, onConfirm) {
 }
 
 /* ============================================================
+   THEME
+   ============================================================ */
+const Theme = {
+  storageKey: 'nexit-theme',
+  getPreferred() {
+    try {
+      const stored = localStorage.getItem(this.storageKey);
+      if (stored === 'light' || stored === 'dark') return stored;
+    } catch {}
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  },
+  apply(theme, persist = false) {
+    const next = theme === 'light' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    document.documentElement.style.colorScheme = next;
+    const meta = document.querySelector('meta[name="color-scheme"]');
+    if (meta) meta.setAttribute('content', next === 'dark' ? 'dark light' : 'light dark');
+    if (persist) {
+      try { localStorage.setItem(this.storageKey, next); } catch {}
+    }
+    const toggle = document.getElementById('themeToggle');
+    if (toggle) {
+      const toLight = next === 'dark';
+      toggle.textContent = toLight ? 'Light mode' : 'Dark mode';
+      toggle.setAttribute('aria-label', toLight ? 'Switch to light mode' : 'Switch to dark mode');
+      toggle.title = toLight ? 'Switch to light mode' : 'Switch to dark mode';
+      toggle.setAttribute('aria-pressed', String(next === 'dark'));
+    }
+    window.dispatchEvent(new CustomEvent('nexit:themechange', { detail: { theme: next } }));
+    return next;
+  },
+  toggle() {
+    const current = document.documentElement.getAttribute('data-theme') || this.getPreferred();
+    return this.apply(current === 'dark' ? 'light' : 'dark', true);
+  }
+};
+
+/* ============================================================
    GLOBAL EVENT WIRING
    ============================================================ */
 document.addEventListener('DOMContentLoaded', () => {
@@ -443,6 +481,21 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('modalConfirm').addEventListener('click', () => {
     if (Modal._onConfirm) Modal._onConfirm();
   });
+
+  // Theme toggle (global, persisted)
+  Theme.apply(document.documentElement.getAttribute('data-theme') || Theme.getPreferred(), false);
+  document.getElementById('themeToggle')?.addEventListener('click', () => Theme.toggle());
+  if (window.matchMedia) {
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    const onSchemeChange = (e) => {
+      try {
+        if (localStorage.getItem(Theme.storageKey)) return;
+      } catch {}
+      Theme.apply(e.matches ? 'light' : 'dark', false);
+    };
+    if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onSchemeChange);
+    else if (typeof mq.addListener === 'function') mq.addListener(onSchemeChange);
+  }
 
   // Global "More tools" (persists across route changes)
   const closeGlobalMoreTools = () => {

@@ -35,10 +35,25 @@ const DASHBOARD_CHARTS = [
   { key: 'onlineStatusByCountry', title: 'Online status by country', description: 'Compare check-in health across countries', type: 'line' }
 ];
 
-const DASHBOARD_COLORS = {
-  navy: '#183B56', blue: '#3478B8', teal: '#2A9D8F', green: '#438A66', amber: '#D69A32', red: '#C75B5B', grey: '#8996A3',
-  series: ['#3478B8', '#438A66', '#D69A32', '#C75B5B', '#8996A3', '#2A9D8F', '#8267A8', '#537D8A']
-};
+const DASHBOARD_SERIES = ['#3478B8', '#438A66', '#D69A32', '#C75B5B', '#8996A3', '#2A9D8F', '#8267A8', '#537D8A'];
+
+function dashboardThemeColors() {
+  const styles = getComputedStyle(document.documentElement);
+  const read = (name, fallback) => (styles.getPropertyValue(name).trim() || fallback);
+  return {
+    navy: read('--dash-navy', '#183B56'),
+    blue: read('--dash-blue', '#3478B8'),
+    teal: read('--dash-teal', '#2A9D8F'),
+    green: read('--dash-green', '#438A66'),
+    amber: read('--dash-amber', '#D69A32'),
+    red: read('--dash-red', '#C75B5B'),
+    grey: read('--dash-grey', '#8996A3'),
+    chartText: read('--chart-text', '#536273'),
+    chartGrid: read('--chart-grid', '#E8EDF1'),
+    chartSurface: read('--chart-surface', '#ffffff'),
+    series: DASHBOARD_SERIES
+  };
+}
 
 App.registerModule('dashboard', {
   charts: new Map(),
@@ -46,6 +61,7 @@ App.registerModule('dashboard', {
   renderController: null,
   renderGeneration: 0,
   filterOptions: {},
+  lastResult: null,
 
   destroy() {
     this.requestController?.abort();
@@ -59,6 +75,11 @@ App.registerModule('dashboard', {
     this.renderController?.abort();
     this.renderController = new AbortController();
     const eventSignal = this.renderController.signal;
+    const onThemeChange = () => {
+      const page = container.querySelector('.enterprise-dashboard');
+      if (page && this.lastResult) this.drawCharts(page, this.lastResult.charts || {});
+    };
+    window.addEventListener('nexit:themechange', onThemeChange, { signal: eventSignal });
     const generation = ++this.renderGeneration;
     const page = document.createElement('section');
     page.className = 'enterprise-dashboard';
@@ -298,6 +319,7 @@ App.registerModule('dashboard', {
   },
 
   renderResult(page, result) {
+    this.lastResult = result;
     const formatNumber = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
     const kpis = result.kpis || {};
     page.querySelector('[data-summary-assets]').textContent = formatNumber.format(result.sourceRecordCount || 0);
@@ -317,8 +339,10 @@ App.registerModule('dashboard', {
   },
 
   drawCharts(page, chartData) {
+    const theme = dashboardThemeColors();
     for (const definition of DASHBOARD_CHARTS) {
       const shell = page.querySelector(`[data-chart-shell="${definition.key}"]`);
+      if (!shell) continue;
       shell.classList.remove('skeleton');
       if (typeof Chart === 'undefined') {
         this.showMessage(page.querySelector('.dashboard-message'), 'Charts could not be loaded. Check your internet connection and refresh the dashboard.', true);
@@ -335,12 +359,16 @@ App.registerModule('dashboard', {
         shell.innerHTML = '<p class="dashboard-chart-empty">No devices match this chart.</p>';
         continue;
       }
-      const chartColors = (data.labels || []).map((label, index) => this.colorForLabel(label, index));
+      if (!shell.querySelector('canvas')) {
+        shell.innerHTML = '<canvas role="img" aria-label="Chart"></canvas>';
+      }
+      const chartColors = (data.labels || []).map((label, index) => this.colorForLabel(label, index, theme));
+      const baseOptions = this.chartOptions(theme);
       const config = definition.type === 'doughnut' || definition.type === 'pie'
         ? {
           type: definition.type,
-          data: { labels: data.labels || [], datasets: [{ data: data.data || [], backgroundColor: chartColors, borderColor: '#fff', borderWidth: 3, hoverOffset: 3 }] },
-          options: { ...this.chartOptions(false), ...(definition.type === 'doughnut' ? { cutout: '66%' } : {}), plugins: { ...this.chartOptions(false).plugins, legend: { position: 'bottom', labels: { usePointStyle: true, padding: 16, boxWidth: 9 } } } }
+          data: { labels: data.labels || [], datasets: [{ data: data.data || [], backgroundColor: chartColors, borderColor: theme.chartSurface, borderWidth: 3, hoverOffset: 3 }] },
+          options: { ...baseOptions, ...(definition.type === 'doughnut' ? { cutout: '66%' } : {}), plugins: { ...baseOptions.plugins, legend: { position: 'bottom', labels: { usePointStyle: true, padding: 16, boxWidth: 9, color: theme.chartText } } } }
         }
         : definition.type === 'line'
         ? {
@@ -350,8 +378,8 @@ App.registerModule('dashboard', {
             datasets: (data.datasets || []).map((series, index) => ({
               label: series.label,
               data: series.data || [],
-              borderColor: this.colorForLabel(series.label, index),
-              backgroundColor: this.colorForLabel(series.label, index),
+              borderColor: this.colorForLabel(series.label, index, theme),
+              backgroundColor: this.colorForLabel(series.label, index, theme),
               pointRadius: 3,
               pointHoverRadius: 5,
               borderWidth: 2,
@@ -359,24 +387,24 @@ App.registerModule('dashboard', {
               fill: false
             }))
           },
-          options: { ...this.chartOptions(false), interaction: { mode: 'index', intersect: false } }
+          options: { ...baseOptions, interaction: { mode: 'index', intersect: false } }
         }
         : {
           type: 'bar',
           data: { labels: data.labels || [], datasets: [{ data: data.data || [], backgroundColor: chartColors, borderRadius: 5, maxBarThickness: 30 }] },
-          options: { ...this.chartOptions(false), indexAxis: definition.horizontal ? 'y' : 'x', plugins: { ...this.chartOptions(false).plugins, legend: { display: false } } }
+          options: { ...baseOptions, indexAxis: definition.horizontal ? 'y' : 'x', plugins: { ...baseOptions.plugins, legend: { display: false } } }
         };
       this.charts.set(definition.key, new Chart(shell.querySelector('canvas').getContext('2d'), config));
     }
   },
 
-  colorForLabel(label, index) {
+  colorForLabel(label, index, theme = dashboardThemeColors()) {
     const value = String(label || '').toLowerCase();
-    if (value.includes('inactive') || value.includes('expired') || value.includes('repair')) return DASHBOARD_COLORS.red;
-    if (value.includes('expir') || value.includes('pending') || value.includes('awaiting')) return DASHBOARD_COLORS.amber;
-    if (value.includes('unknown') || value.includes('missing') || value.includes('archived') || value.includes('decommission')) return DASHBOARD_COLORS.grey;
-    if (value.includes('active') || value.includes('deployed') || value.includes('covered') || value.includes('ready')) return DASHBOARD_COLORS.green;
-    return DASHBOARD_COLORS.series[index % DASHBOARD_COLORS.series.length];
+    if (value.includes('inactive') || value.includes('expired') || value.includes('repair')) return theme.red;
+    if (value.includes('expir') || value.includes('pending') || value.includes('awaiting')) return theme.amber;
+    if (value.includes('unknown') || value.includes('missing') || value.includes('archived') || value.includes('decommission')) return theme.grey;
+    if (value.includes('active') || value.includes('deployed') || value.includes('covered') || value.includes('ready')) return theme.green;
+    return theme.series[index % theme.series.length];
   },
 
   async openMetricRecords(metric, label, filterGrid, page) {
@@ -394,18 +422,18 @@ App.registerModule('dashboard', {
     }
   },
 
-  chartOptions() {
+  chartOptions(theme = dashboardThemeColors()) {
     return {
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
       plugins: {
-        legend: { display: true, position: 'bottom', labels: { usePointStyle: true, padding: 16, color: '#536273', boxWidth: 9 } },
+        legend: { display: true, position: 'bottom', labels: { usePointStyle: true, padding: 16, color: theme.chartText, boxWidth: 9 } },
         tooltip: { mode: 'index', intersect: false }
       },
       scales: {
-        x: { beginAtZero: true, grid: { display: false }, ticks: { color: '#687786', precision: 0 } },
-        y: { beginAtZero: true, grid: { color: '#E8EDF1' }, ticks: { color: '#687786', precision: 0 } }
+        x: { beginAtZero: true, grid: { display: false }, ticks: { color: theme.chartText, precision: 0 } },
+        y: { beginAtZero: true, grid: { color: theme.chartGrid }, ticks: { color: theme.chartText, precision: 0 } }
       }
     };
   },

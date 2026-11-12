@@ -1,6 +1,6 @@
 # All-in-One IT Hub
 
-A local IT asset inventory and operations dashboard built with HTML, CSS, vanilla JavaScript, Python's standard library, and SQLite. It supports Intune-style inventory CSV import, warranty matching, user-to-asset views, durable asset checkout/check-in history, device replacements, filtering, analytics, and CSV exports.
+A local IT asset inventory and operations dashboard built with HTML, CSS, vanilla JavaScript, Python's standard library, and SQLite. It supports Intune-style inventory CSV import, warranty matching, user-to-asset views, durable asset checkout/check-in history, device replacements, filtering, analytics, CSV exports, and a global dark/light theme.
 
 > **Local-use application:** By default the server listens on `127.0.0.1` and SQLite is designed for one local app instance/user at a time. This is not a hosted, multi-user service. Do not expose it to the internet or an untrusted network. If you need access from another device on a private network (for example, over Tailscale), you can bind to another interface with `NEXIT_HOST`, but the app still has no authentication or authorization — only do this on networks you trust.
 
@@ -75,6 +75,11 @@ The project intentionally does not include device, warranty, or replacement reco
 
 ## How to use the app
 
+### Global controls and theme
+
+- **More tools** (topbar, visible on every page): fixed actions **Backup Database**, **Restore Database**, **Clean Database**, **Export CSV**, **Import CSV**. **Export CSV** and **Import CSV** use two-step choosers: pick **Asset Inventory data** or **User list data**, then choose **Active columns** / **All columns** (export) or continue with the existing import/review flow for the selected source. Exports are generated as UTF-8 with BOM. The separate **Import Warranty** control has been removed from the UI as redundant.
+- **Theme toggle** (next to More tools): switches between dark and light modes for the whole app (shell, tables, dashboard/charts, modals, dropdowns, toasts, tooltips, and native controls). The choice is saved in `localStorage`, respects `prefers-color-scheme` on first load, and is applied before paint to avoid a flash. Dashboard charts re-read theme colors on toggle.
+
 ### Dashboard
 
 Open **Dashboard** for a business overview of the same inventory shown in **Inventory**. The headline cards summarize total, deployed, available-to-deploy, and inactive-over-90-days devices. The attention section highlights warranty dates, missing assignments, duplicate serials, and archived assets. Charts break down inventory status, online status, warranty outlook, device models, fleet share by country, and online health by country. Filter by country, category, inventory status, online status, operating system, manufacturer, or warranty; all counts and charts update together. Select a metric to open its matching devices in Inventory.
@@ -82,12 +87,12 @@ Open **Dashboard** for a business overview of the same inventory shown in **Inve
 ### Inventory
 
 1. Open **Inventory**.
-2. Select **Import CSV** and choose an Intune device export. `Device name` and `Serial number` are required; `Device ID` is optional.
+2. Use global **More tools → Import CSV → Asset Inventory data** and choose an Intune-style device export. `Device name` and `Serial number` are required; `Device ID` is optional.
 3. If the import finds serial duplicates, choose whether to merge them with existing records or keep them separately. Kept duplicates are given a suffix and highlighted.
 4. Use the universal search box to search across all device fields — device name, user, serial, group, warranty, status, and more. Open **Filter** for a slide-out panel with **Duplicate Only**, **Show Archived**, and single-select **Deployment Status** and **Hardware Health** filters; the panel and filter values are remembered in the browser until you choose **Reset**. Open **Columns** to search fields, show or hide them, and set their order; **Reset defaults** restores the default layout.
 5. Select a device checkbox to highlight its entire row. Use **Select all visible**, **Edit selected**, or **Delete selected** for bulk actions.
-6. Use **+ Add device** or **Edit** to manage individual records. The per-row **Delete** action has been removed from inventory table rows to prevent accidental deletions. The per-row **Edit** action has been removed as well; select devices with checkboxes and use **Edit selected** for bulk updates. Inventory changes are saved to SQLite. **Undo** and **Redo** are available for recent inventory changes in the current page session. Use bulk **Delete selected** with care for selected devices.
-7. Select **Export CSV** and choose **Active columns** (the columns currently visible) or **All columns**. The active search and filters determine which device rows are exported.
+6. Use **+ Add device** or **Edit selected** to manage records. The per-row **Delete** and per-row **Edit** actions have been removed from inventory table rows to prevent accidental changes; select devices with checkboxes and use **Edit selected** for bulk updates. Inventory changes are saved to SQLite. **Undo** and **Redo** are available for recent inventory changes in the current page session. Use bulk **Delete selected** with care for selected devices.
+7. Use global **More tools → Export CSV → Asset Inventory data** and choose **Active columns** (the columns currently visible) or **All columns**. The active search and filters determine which device rows are exported.
 
 Forms for adding or editing devices and users stay open when you click outside the dialog. Close them with the **×** button, **Cancel**, or the form's apply/save action.
 
@@ -113,11 +118,11 @@ Replacement fields shown in the table are derived from the separate replacement 
 
 In **Edit selected**, Replacement Status uses **Not replaced**, **Replaced**, **Pending replacement**, or **In progress**. Staff Employment Status uses **Active**, **Leaver**, **Contractor**, or **Unknown**. Existing values outside these lists remain selectable with a **legacy** marker until changed.
 
-Use **Backup Database** to download a consistent SQLite snapshot containing inventory, warranty, replacement, checkout/check-in, and Users data. Choose **Restore Database** and select a NexIT `.db` backup to replace the current database; NexIT validates the file before restoring and reloads the app afterward. Restore replaces all current data, so create and keep a backup before restoring. Database backup uploads are limited to 512 MB.
+Use global **More tools → Backup Database** to download a consistent SQLite snapshot containing inventory, warranty, replacement, checkout/check-in, and Users data. Choose **Restore Database** and select a NexIT `.db` backup to replace the current database; NexIT validates the file before restoring and reloads the app afterward. **Clean Database** clears application data (use with care and keep a backup first). Restore replaces all current data, so create and keep a backup before restoring. Database backup uploads are limited to 512 MB.
 
 ### Users and assigned assets
 
-Open **Users** to maintain the staff directory used by asset checkout. Choose **+ Add user** to enter a name, optional email, Account Active status, country, and location, or **Import users CSV** to load multiple users. CSV requires a `Name`, `Full Name`, `User Name`, or `Staff Name` column; `User ID`, `Email`, `Account Active`, `Country`, and `Location` are optional. Imports merge by email (or by name when email is blank) and update matching users. The list is stored in SQLite and is included in database backups.
+Open **Users** to maintain the staff directory used by asset checkout. Choose **+ Add user** to enter a name, optional email, Account Active status, country, and location, or use global **More tools → Import CSV → User list data** to load multiple users. CSV requires a `Name`, `Full Name`, `User Name`, or `Staff Name` column; `User ID`, `Email`, `Account Active`, `Country`, and `Location` are optional. Imports merge by email (or by name when email is blank) and update matching users (with a prompt when matching users are found). The list is stored in SQLite and is included in database backups. Use **More tools → Export CSV → User list data** to export active or all columns for the currently filtered users.
 
 Each Users record has an **Account Active** value of **YES** or **NO**, which can be set when adding or editing users or supplied in an `Account Active` CSV column. If that column is blank or absent, the value defaults to **YES**. There is no automatic email-format classification.
 
@@ -161,9 +166,7 @@ Inventory imports are rejected if the same serial is assigned to different Prima
 
 ### Warranty matching
 
-1. In **Inventory**, select **Import Warranty**.
-2. Choose a CSV with a `Serial number` column. `Warranty Start Date` and `Warranty End Date` are optional.
-3. The app matches serial numbers without case or whitespace differences and shows the warranty match status in the inventory.
+NexIT matches warranty records to inventory devices by normalized serial number (without case or whitespace differences) and shows the warranty match status in the inventory. Warranty start/end (and purchase/disposal) dates are stored as ISO `YYYY-MM-DD`, displayed/exported as `DD-MMM-YYYY`, and accepted on import as `DD-MMM-YYYY`, `YYYY-MM-DD`, or Excel serials; ambiguous slash dates are rejected and sentinel `00-Jan-1900` is treated as empty. The dedicated **Import Warranty** UI control has been removed; warranty data may be provided via the underlying inventory/warranty data flows and APIs as applicable.
 
 ### Device Replacement History
 
@@ -247,7 +250,7 @@ The app validates these fields during import and supports commas, quotes, and ne
 
 ## Backup and restore
 
-Use **Backup Database** in Inventory to create an online backup without stopping the app. Copy the downloaded file to secure backup storage that is separate from the computer running NexIT; the browser's Downloads folder is not an off-device backup by itself. To restore, use **Restore Database** and select a trusted NexIT backup. Restore replaces the whole active database and reloads the app. The uploaded file must be a readable NexIT SQLite database and no larger than 512 MB.
+Use global **More tools → Backup Database** to create an online backup without stopping the app. Copy the downloaded file to secure backup storage that is separate from the computer running NexIT; the browser's Downloads folder is not an off-device backup by itself. To restore, use **More tools → Restore Database** and select a trusted NexIT backup. Restore replaces the whole active database and reloads the app. The uploaded file must be a readable NexIT SQLite database and no larger than 512 MB. Use **Clean Database** only when you intentionally want to clear application data (keep a backup first).
 
 Backups contain device and staff information; protect them like the active database. For manual recovery, stop NexIT first, then replace `nexit-assets.db` at the database location listed above with a trusted backup and restart the app. CSV exports remain useful for transferring individual datasets, but do not include all application data and history.
 
@@ -269,13 +272,13 @@ The tests use temporary SQLite databases and do not need your local inventory da
 
 ## Project files
 
-- `index.html` — page structure, navigation, and script loading
-- `main.css` — shared styling and responsive layouts
-- `app.js` — module navigation, SQLite-backed storage, and shared UI helpers
+- `index.html` — page structure, navigation, global shell controls (More tools, theme toggle), pre-paint theme bootstrap, and script loading
+- `main.css` — shared styling, responsive layouts, and theme tokens (`:root` / `[data-theme="dark"]`, `color-scheme`)
+- `app.js` — module navigation, SQLite-backed storage, shared UI helpers, global More tools routing, and theme persistence/toggle logic
 - `constants.js`, `constants.py` — shared deployment status, condition, disposition-method, and badge-colour lists (keep in sync)
-- `dashboard.js`, `dashboard_metrics.py` — dashboard UI and calculations
-- `inventory.js` — inventory, filters, CSV import/export, warranty matching, custody, status fields, and backup/restore actions
-- `users.js` — staff directory, user CSV import, and per-user assigned assets
+- `dashboard.js`, `dashboard_metrics.py` — dashboard UI and calculations; charts read theme tokens and refresh on theme changes
+- `inventory.js` — inventory, filters, CSV import/export flows, warranty/status/custody handling, and reusable backup/restore/clean handlers
+- `users.js` — staff directory, user CSV import/export flows, and per-user assigned assets
 - `replacement-history.js` — replacement history UI, validation, matching, and CSV transfer
 - `server.py` — local HTTP server, SQLite API, and status-field validation
 - `migrations/migrate_inventory_status_json.py` — idempotent one-time migration for deployment status, condition, and archive fields
