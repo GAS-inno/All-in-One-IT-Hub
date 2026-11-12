@@ -470,7 +470,7 @@ App.registerModule('users', (() => {
     let filteredUsers = userAssetCountFilter.trim() === '' || !Number.isFinite(parsedAssetCount)
       ? users
       : users.filter((user) => user.assets.length === parsedAssetCount);
-    if (userStaffTypeFilter && userStaffTypeFilter !== 'all') {
+    if (userStaffTypeFilter !== 'all') {
       filteredUsers = filteredUsers.filter((user) => {
         const effectiveStaffType = String(user.staffType || '') || null;
         const wanted = userStaffTypeFilter === '' ? null : userStaffTypeFilter;
@@ -562,12 +562,11 @@ App.registerModule('users', (() => {
     let filteredUsers = userAssetCountFilter.trim() === '' || !Number.isFinite(parsedAssetCount)
       ? users
       : users.filter((user) => user.assets.length === parsedAssetCount);
-    if (userStaffTypeFilter && userStaffTypeFilter !== 'all') {
+    if (userStaffTypeFilter !== 'all') {
       filteredUsers = filteredUsers.filter((user) => {
         const effectiveStaffType = String(user.staffType || '') || null;
         const wanted = userStaffTypeFilter === '' ? null : userStaffTypeFilter;
-        const matches = wanted === null ? !effectiveStaffType : effectiveStaffType === wanted;
-        return matches;
+        return wanted === null ? !effectiveStaffType : effectiveStaffType === wanted;
       });
     }
     if (userFilterUserId.trim()) {
@@ -812,7 +811,8 @@ App.registerModule('users', (() => {
     const userStaffTypeFilterSelect = container.querySelector('#userStaffTypeFilter');
     if (userStaffTypeFilterSelect) {
       userStaffTypeFilterSelect.addEventListener('change', (event) => {
-        userStaffTypeFilter = String(event.target.value || 'all');
+        const value = String(event.target.value ?? 'all');
+        userStaffTypeFilter = value;
         render(container, countryFilter);
       });
     }
@@ -861,7 +861,8 @@ App.registerModule('users', (() => {
     const userFilterStaffTypeSelectDrawer = container.querySelector('#userFilterStaffType');
     if (userFilterStaffTypeSelectDrawer) {
       userFilterStaffTypeSelectDrawer.addEventListener('change', (event) => {
-        userStaffTypeFilter = String(event.target.value || 'all');
+        const value = String(event.target.value ?? 'all');
+        userStaffTypeFilter = value;
         render(container, countryFilter);
       });
     }
