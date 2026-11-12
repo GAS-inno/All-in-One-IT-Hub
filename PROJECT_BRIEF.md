@@ -13,7 +13,7 @@ NexIT is a local IT asset management app for inventory, warranty, staff assignme
 - Backend: Python standard library (`http.server`, `sqlite3`); no external Python packages.
 - Storage: SQLite database at the platform's local application-data directory. `server.py` prints the active path and `/api/health` reports it.
 - Dashboard charts use Chart.js from jsDelivr; internet access is needed for those charts. Chart colors/options are derived from theme CSS variables and refreshed on theme toggle.
-- Global app shell: **More tools** in the topbar is persistent across pages with fixed actions **Backup Database, Restore Database, Clean Database, Export CSV, Import CSV**; Export/Import use source-aware choosers (Asset Inventory/User list, active/all or existing import flow) and reuse module handlers.
+- Global app shell: **More tools** in the topbar is persistent across pages with fixed actions **Backup Database, Restore Database, Clean Database, Export CSV, Import CSV, Download CSV template**; Export/Import use source-aware choosers (Asset Inventory/User list, active/all or existing import flow) and reuse module handlers. "Download CSV template" opens the template preview/modal from the inventory module (placement moved from sidebar).
 - Start from the project directory with `python3 server.py` (Linux/macOS) or `py server.py` (Windows). The server binds to `127.0.0.1:8000` by default; `NEXIT_HOST` and `NEXIT_PORT` can override the bind for trusted private-network access (e.g. Tailscale). NexIT has no authentication.
 
 ## Data ownership and rules

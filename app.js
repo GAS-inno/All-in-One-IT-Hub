@@ -438,8 +438,6 @@ document.addEventListener('DOMContentLoaded', () => {
       } else if (item.dataset.module) {
         if (item.dataset.module === 'inventory') App.modules.inventory?.selectDeviceType?.('');
         App.navigateTo(item.dataset.module);
-      } else if (item.dataset.action === 'download-csv-template') {
-        App.modules.inventory?.openCsvTemplateModal?.();
       }
       // Close mobile sidebar
       document.getElementById('sidebar').classList.remove('open');
@@ -573,6 +571,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('globalImportCsvBtn')?.addEventListener('click', () => {
     closeGlobalMoreTools();
     promptGlobalImport();
+  });
+  document.getElementById('globalDownloadCsvTemplateBtn')?.addEventListener('click', () => {
+    closeGlobalMoreTools();
+    App.modules.inventory?.openCsvTemplateModal?.();
   });
 
   document.getElementById('globalDatabaseRestoreInput')?.addEventListener('change', (event) => {
