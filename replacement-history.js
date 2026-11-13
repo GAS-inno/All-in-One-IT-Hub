@@ -619,17 +619,16 @@ App.registerModule('replacements', (() => {
           if (newSerial.value.trim() && serialKey(newSerial.value) === serialKey(oldSerial.value)) missing.push('A device cannot replace itself.');
           warning.textContent = missing.join(' ');
         };
-        const searchDevices = () => {
+        const searchDevices = ({ immediate = false } = {}) => {
           const query = newSerial.value.trim();
           clearTimeout(deviceTimer);
-          selectedNewSerial = '';
+          if (selectedNewSerial && serialKey(newSerial.value) !== serialKey(selectedNewSerial)) selectedNewSerial = '';
           deviceSuggestions.replaceChildren();
           newSerial.setAttribute('aria-expanded', 'false');
-          newSerial.setAttribute('aria-invalid', 'true');
-          deviceMessage.textContent = query ? 'Searching available inventory…' : '';
-          deviceMessage.dataset.loading = String(Boolean(query));
-          if (!query) return;
-          deviceTimer = setTimeout(async () => {
+          newSerial.setAttribute('aria-invalid', selectedNewSerial ? 'false' : 'true');
+          deviceMessage.textContent = query ? 'Searching available inventory…' : 'Loading available devices…';
+          deviceMessage.dataset.loading = 'true';
+          const run = async () => {
             try {
               const result = await fetchSearchResults(`/api/inventory/available-replacements?q=${encodeURIComponent(query)}&exclude=${encodeURIComponent(oldSerial.value.trim())}`, 'Replacement inventory search');
               if (newSerial.value.trim() !== query) return;
@@ -637,7 +636,7 @@ App.registerModule('replacements', (() => {
               deviceMessage.dataset.loading = 'false';
               deviceSuggestions.innerHTML = devices.map((device) => {
                 return `<button type="button" class="replacement-suggestion" role="option" data-device-serial="${escapeHtml(device.serial)}">
-                  <strong>${highlightMatch(device.serial, query)}</strong><small>${highlightMatch([device.model, device.country, device.fixedAssetNumber].filter(Boolean).join(' · '), query)}</small>
+                  <strong>${highlightMatch(device.serial, query)}</strong><small>${highlightMatch([device.model, device.country, device.fixedAssetNumber, device.deviceName].filter(Boolean).join(' · '), query)}</small>
                 </button>`;
               }).join('');
               deviceSuggestions.querySelectorAll('[data-device-serial]').forEach((button) => {
@@ -653,19 +652,35 @@ App.registerModule('replacements', (() => {
                 });
               });
               newSerial.setAttribute('aria-expanded', String(devices.length > 0));
-          if (devices.length) newSerial.setAttribute('aria-invalid', 'true');
-              deviceMessage.textContent = devices.length ? 'Select a device from inventory.' : 'No available replacement device matches this search.';
+              if (!selectedNewSerial || serialKey(newSerial.value) !== serialKey(selectedNewSerial)) {
+                newSerial.setAttribute('aria-invalid', 'true');
+              } else {
+                newSerial.removeAttribute('aria-invalid');
+              }
+              if (devices.length) {
+                deviceMessage.textContent = query ? 'Select a device from inventory.' : 'Available devices (select one). Type to filter.';
+              } else {
+                deviceMessage.textContent = query ? 'No available replacement device matches this search.' : 'No available replacement devices found (check handoff eligibility/settings).';
+              }
             } catch (error) {
               deviceMessage.dataset.loading = 'false';
               deviceMessage.textContent = error.message || 'Inventory search failed.';
             }
-          }, 250);
+          };
+          if (immediate) run();
+          else deviceTimer = setTimeout(run, 250);
         };
         oldSerial.addEventListener('input', () => { manualOverrides.add('old'); searchOldDevices(); updateWarning(); });
         newSerial.addEventListener('input', () => { searchDevices(); updateWarning(); });
+        newSerial.addEventListener('focus', () => {
+          if (!selectedNewSerial) searchDevices({ immediate: true });
+        });
+        // Load available devices automatically so user can pick without manual searching.
+        searchDevices({ immediate: true });
         if (selectedNewSerial) {
           const device = inventoryDevice(selectedNewSerial);
           deviceMessage.textContent = device ? `Current linked device: ${device['Device name'] || selectedNewSerial}` : 'Current linked device.';
+          newSerial.removeAttribute('aria-invalid');
         }
         if (staffName.value && staffEmail.value) {
           fetchSearchResults(`/api/users/search?q=${encodeURIComponent(staffEmail.value)}`, 'Staff lookup').then((result) => {

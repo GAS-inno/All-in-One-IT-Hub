@@ -1668,15 +1668,17 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
         params = parse_qs(query_string, keep_blank_values=False, max_num_fields=8)
         query = params.get("q", [""])[0].strip()
         excluded = {_serial_key(value) for value in params.get("exclude", [""])[0].split("|") if value.strip()}
-        if not query:
-            return []
-        pattern = _like_pattern(query)
-        sql = ("SELECT data_json FROM inventory_devices "
-               "WHERE LOWER(device_name) LIKE LOWER(?) ESCAPE '\\' "
-               "OR LOWER(serial_number) LIKE LOWER(?) ESCAPE '\\' "
-               "OR LOWER(data_json) LIKE LOWER(?) ESCAPE '\\' "
-               "ORDER BY position, id")
-        rows = self._logged_search_rows("available-replacements", sql, (pattern, pattern, pattern))
+        if query:
+            pattern = _like_pattern(query)
+            sql = ("SELECT data_json FROM inventory_devices "
+                   "WHERE LOWER(device_name) LIKE LOWER(?) ESCAPE '\\' "
+                   "OR LOWER(serial_number) LIKE LOWER(?) ESCAPE '\\' "
+                   "OR LOWER(data_json) LIKE LOWER(?) ESCAPE '\\' "
+                   "ORDER BY position, id")
+            rows = self._logged_search_rows("available-replacements", sql, (pattern, pattern, pattern))
+        else:
+            sql = "SELECT data_json FROM inventory_devices ORDER BY device_name COLLATE NOCASE, serial_number COLLATE NOCASE, position, id"
+            rows = self._logged_search_rows("available-replacements", sql, ())
         with _DB_LOCK, database_connection() as connection:
             active_checkouts = _active_checkout_serials(connection)
             handoff_config = _read_replacement_handoff_config(connection)
@@ -1690,7 +1692,7 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
             ok, _ = _replacement_handoff_eligibility(device, active_checkouts, config=handoff_config)
             if not serial or _serial_key(serial) in excluded or not ok:
                 continue
-            if not any(needle in value.casefold() for value in fields):
+            if query and not any(needle in value.casefold() for value in fields):
                 continue
             devices.append({"serial": serial, "model": fields[1], "country": fields[2],
                             "fixedAssetNumber": fields[3], "deviceName": fields[4],
