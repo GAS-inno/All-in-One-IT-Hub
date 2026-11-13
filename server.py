@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
-from constants import CONDITION, DEPLOYMENT_STATUS, DISPOSITION_METHOD, OLD_DEVICE_OUTCOME
+from constants import CONDITION, CONDITION_LABELS, DEPLOYMENT_STATUS, DISPOSITION_METHOD, OLD_DEVICE_OUTCOME
 from dashboard_metrics import build_dashboard, filter_options, matching_record_indexes
 from date_utils import (
     excel_serial_to_iso as _excel_serial_to_iso,
@@ -1151,6 +1151,11 @@ def _device_staff_identity(connection: sqlite3.Connection, device: dict[str, Any
 
 ACTIVE_ASSIGNED_STATUS_NAMES = {"deployed", "in use", "active", "checked out", "assigned", "in service"}
 
+DEFAULT_REPLACEMENT_HANDOFF_CONFIG = {
+    "deployment_statuses": ["In Stock"],
+    "conditions": ["Good"],
+}
+
 
 def _active_assigned_device(device: dict[str, Any], active_checkouts: set[str]) -> bool:
     serial = _asset_serial(device)
@@ -1162,16 +1167,127 @@ def _active_assigned_device(device: dict[str, Any], active_checkouts: set[str]) 
                             or (assigned and not status)))
 
 
-def _eligible_handout_device(record: dict[str, Any], active_checkouts: set[str] | None = None) -> bool:
+def _read_replacement_handoff_config(connection: sqlite3.Connection) -> dict[str, list[str]]:
+    row = connection.execute(
+        "SELECT value FROM app_metadata WHERE key='replacement_handoff_config'"
+    ).fetchone()
+    if not row:
+        return {"deployment_statuses": list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["deployment_statuses"]),
+                "conditions": list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["conditions"])}
+    try:
+        payload = json.loads(row["value"])
+    except Exception:
+        return {"deployment_statuses": list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["deployment_statuses"]),
+                "conditions": list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["conditions"])}
+    if not isinstance(payload, dict):
+        return {"deployment_statuses": list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["deployment_statuses"]),
+                "conditions": list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["conditions"])}
+    dep = payload.get("deployment_statuses")
+    cond = payload.get("conditions")
+    dep_list = [str(v).strip() for v in dep] if isinstance(dep, list) else list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["deployment_statuses"])
+    cond_list = [str(v).strip() for v in cond] if isinstance(cond, list) else list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["conditions"])
+    dep_list = [v for v in dep_list if v]
+    cond_list = [v for v in cond_list if v]
+    if not dep_list:
+        dep_list = list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["deployment_statuses"])
+    if not cond_list:
+        cond_list = list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["conditions"])
+    return {"deployment_statuses": dep_list, "conditions": cond_list}
+
+
+def _save_replacement_handoff_config(connection: sqlite3.Connection, payload: Any) -> dict[str, list[str]]:
+    if not isinstance(payload, dict):
+        raise ValueError("Replacement handoff config must be a JSON object.")
+    dep = payload.get("deployment_statuses")
+    cond = payload.get("conditions")
+    if not isinstance(dep, list) or not isinstance(cond, list):
+        raise ValueError("deployment_statuses and conditions must be arrays.")
+    dep_list = [str(v).strip() for v in dep if str(v).strip()]
+    cond_list = [str(v).strip() for v in cond if str(v).strip()]
+    invalid_dep = [v for v in dep_list if v not in DEPLOYMENT_STATUS]
+    if invalid_dep:
+        raise ValueError(f"Unknown deployment status values: {', '.join(invalid_dep)}.")
+    invalid_cond = [v for v in cond_list if v not in CONDITION]
+    if invalid_cond:
+        raise ValueError(f"Unknown condition values: {', '.join(invalid_cond)}.")
+    if not dep_list or not cond_list:
+        raise ValueError("Select at least one allowed deployment status and one allowed condition.")
+    config = {"deployment_statuses": dep_list, "conditions": cond_list}
+    connection.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES('replacement_handoff_config', ?)",
+        (json.dumps(config, ensure_ascii=False),),
+    )
+    return config
+
+
+def _format_condition_label(value: str) -> str:
+    raw = str(value or "").strip()
+    return CONDITION_LABELS.get(raw, raw)
+
+
+def _asset_display_name(record: dict[str, Any]) -> str:
+    serial = _as_text(record, "Serial number", "IntuneGroup.SerialNumber").strip() or "(no serial)"
+    name = _as_text(record, "Device name").strip()
+    return f"{name} ({serial})" if name else serial
+
+
+def _replacement_handoff_eligibility(record: dict[str, Any], active_checkouts: set[str] | None = None, connection: sqlite3.Connection | None = None, config: dict[str, list[str]] | None = None) -> tuple[bool, str]:
+    if config is None:
+        if connection is not None:
+            config = _read_replacement_handoff_config(connection)
+        else:
+            config = {"deployment_statuses": list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["deployment_statuses"]),
+                      "conditions": list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["conditions"])}
     serial = _asset_serial(record)
     if active_checkouts and serial in active_checkouts:
-        return False
+        return False, "it is currently checked out"
     if _as_text(record, "Primary user email address", "Primary user UPN", "Primary user display name"):
-        return False
-    status = _as_text(record, "Status Label", "Status").strip().casefold()
-    if not status:
-        return True
-    return status in ELIGIBLE_HANDOUT_STATUS_NAMES
+        return False, "it is assigned to a primary user"
+    deployment_status = _as_text(record, "deployment_status").strip()
+    condition = _as_text(record, "condition").strip()
+    allowed_dep = config.get("deployment_statuses") or []
+    allowed_cond = config.get("conditions") or []
+    allowed_desc = [f"{ds} + {_format_condition_label(c)}" for ds in allowed_dep for c in allowed_cond]
+    allowed_text = ", ".join(allowed_desc) if allowed_desc else "(none configured)"
+    if not deployment_status:
+        return False, f"Deployment Status is blank (allowed: {allowed_text})"
+    if deployment_status not in allowed_dep:
+        return False, f"Deployment Status is '{deployment_status}' and Condition is '{_format_condition_label(condition) or 'blank'}' (allowed: {allowed_text})"
+    if not condition:
+        return False, f"Deployment Status is '{deployment_status}' and Condition is blank (allowed: {allowed_text})"
+    if condition not in allowed_cond:
+        return False, f"Deployment Status is '{deployment_status}' and Condition is '{_format_condition_label(condition)}' (allowed: {allowed_text})"
+    status = _as_text(record, "Status Label", "Status").strip()
+    if status and status.casefold() in {n.casefold() for n in ACTIVE_ASSIGNED_STATUS_NAMES}:
+        return False, f"Status Label is '{status}' (allowed: {allowed_text})"
+    return True, ""
+
+
+def _eligible_handout_device(record: dict[str, Any], active_checkouts: set[str] | None = None, connection: sqlite3.Connection | None = None, config: dict[str, list[str]] | None = None) -> bool:
+    ok, _reason = _replacement_handoff_eligibility(record, active_checkouts, connection=connection, config=config)
+    return ok
+
+
+def _replacement_handoff_ineligible_error(record: dict[str, Any], active_checkouts: set[str] | None = None, connection: sqlite3.Connection | None = None, config: dict[str, list[str]] | None = None) -> str:
+    ok, reason = _replacement_handoff_eligibility(record, active_checkouts, connection=connection, config=config)
+    if ok:
+        return ""
+    name = _asset_display_name(record)
+    deployment_status = _as_text(record, "deployment_status").strip() or "blank"
+    condition = _format_condition_label(_as_text(record, "condition").strip()) or "blank"
+    status_label = _as_text(record, "Status Label", "Status").strip() or "blank"
+    if config is None and connection is not None:
+        cfg = _read_replacement_handoff_config(connection)
+    else:
+        cfg = config or {"deployment_statuses": list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["deployment_statuses"]),
+                         "conditions": list(DEFAULT_REPLACEMENT_HANDOFF_CONFIG["conditions"])}
+    allowed_desc = [f"{ds} + {_format_condition_label(c)}" for ds in (cfg.get("deployment_statuses") or []) for c in (cfg.get("conditions") or [])]
+    allowed_text = ", ".join(allowed_desc) if allowed_desc else "(none configured)"
+    return (
+        f"Device '{name}' cannot be used as a replacement: {reason}. "
+        f"Current status — Deployment Status: '{deployment_status}', Condition: '{condition}', Status Label: '{status_label}'. "
+        f"Allowed for replacement handoff: {allowed_text}."
+    )
 
 
 def _assigned_device_status_label(connection: sqlite3.Connection) -> str:
@@ -1182,7 +1298,23 @@ def _assigned_device_status_label(connection: sqlite3.Connection) -> str:
         return deployed
     deployable = next((label["name"] for label in labels if label["type"] == "Deployable"), None)
     if not deployable:
-        raise ValueError("Configure a Deployable status label before assigning a replacement device.")
+        # Attempt self-heal to defaults so replacement can proceed
+        try:
+            _replace_status_labels(connection, list(DEFAULT_STATUS_LABELS))
+            labels = _read_status_labels(connection)
+            deployed = next((label["name"] for label in labels
+                             if label["name"].casefold() == "deployed" and label["type"] == "Deployable"), None)
+            if deployed:
+                return deployed
+            deployable = next((label["name"] for label in labels if label["type"] == "Deployable"), None)
+            if deployable:
+                return deployable
+        except Exception:
+            pass
+        raise ValueError(
+            "No Deployable Status Label is configured (required to assign the replacement device). "
+            "Restore default status labels (including 'Deployed', type Deployable) in settings/data and try again."
+        )
     return deployable
 
 
@@ -1241,8 +1373,10 @@ def _apply_replacement_links(connection: sqlite3.Connection, records: list[dict[
         if not target_row:
             raise ValueError("The replacement device is no longer in inventory. Refresh inventory and choose another device.")
         target = json.loads(target_row["data_json"])
-        if not _eligible_handout_device(target, active_checkouts):
-            raise ValueError("The replacement device is no longer available for handout. Search again and choose another device.")
+        handoff_config = _read_replacement_handoff_config(connection)
+        ok, _ = _replacement_handoff_eligibility(target, active_checkouts, config=handoff_config)
+        if not ok:
+            raise ValueError(_replacement_handoff_ineligible_error(target, active_checkouts, config=handoff_config))
         matching_incoming = incoming_by_serial.get(_serial_key(replacement_serial), [])
         if len(matching_incoming) != 1:
             raise ValueError("The selected replacement device has an ambiguous serial number in the inventory update.")
@@ -1362,11 +1496,15 @@ def _save_replacement_record(connection: sqlite3.Connection, payload: Any) -> in
 
     target = _inventory_row_for_serial(connection, new_serial)
     if not target:
-        raise ValueError("The replacement device is no longer in inventory. Refresh inventory and choose another device.")
+        raise ValueError(f"Replacement device '{new_serial}' was not found in inventory. Refresh and choose another device.")
     target_record = json.loads(target["data_json"])
     is_same_existing_target = bool(old_target_serial and _serial_key(old_target_serial) == _serial_key(new_serial))
-    if not _eligible_handout_device(target_record, _active_checkout_serials(connection)) and not is_same_existing_target:
-        raise ValueError("The replacement device is no longer available for handout. Search again and choose an available device.")
+    active_checkouts = _active_checkout_serials(connection)
+    handoff_config = _read_replacement_handoff_config(connection)
+    if not is_same_existing_target:
+        ok, _ = _replacement_handoff_eligibility(target_record, active_checkouts, config=handoff_config)
+        if not ok:
+            raise ValueError(_replacement_handoff_ineligible_error(target_record, active_checkouts, config=handoff_config))
     target_record["Status Label"] = _assigned_device_status_label(connection)
     target_record["Primary user display name"] = name
     target_record["Primary user email address"] = email
@@ -1541,6 +1679,7 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
         rows = self._logged_search_rows("available-replacements", sql, (pattern, pattern, pattern))
         with _DB_LOCK, database_connection() as connection:
             active_checkouts = _active_checkout_serials(connection)
+            handoff_config = _read_replacement_handoff_config(connection)
         devices = []
         needle = query.casefold()
         for row in rows:
@@ -1548,7 +1687,8 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
             serial = _asset_serial(device).strip()
             fields = [serial, _as_text(device, "Model"), _as_text(device, "Country"),
                       _as_text(device, "Fixed Asset Number"), _as_text(device, "Device name")]
-            if not serial or _serial_key(serial) in excluded or not _eligible_handout_device(device, active_checkouts):
+            ok, _ = _replacement_handoff_eligibility(device, active_checkouts, config=handoff_config)
+            if not serial or _serial_key(serial) in excluded or not ok:
                 continue
             if not any(needle in value.casefold() for value in fields):
                 continue
@@ -1681,6 +1821,20 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
             except (OSError, sqlite3.Error) as error:
                 self.log_error("Field option query failed: %s", error)
                 self._send_json(500, {"error": "Could not load device field options."})
+            return
+        if parsed.path == "/api/replacement-handoff-config":
+            try:
+                with _DB_LOCK, database_connection() as connection:
+                    config = _read_replacement_handoff_config(connection)
+                self._send_json(200, {
+                    "config": config,
+                    "defaults": DEFAULT_REPLACEMENT_HANDOFF_CONFIG,
+                    "allowedDeploymentStatuses": list(DEPLOYMENT_STATUS),
+                    "allowedConditions": [{"value": v, "label": CONDITION_LABELS.get(v, v)} for v in CONDITION],
+                })
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Replacement handoff config query failed: %s", error)
+                self._send_json(500, {"error": "Could not load replacement handoff configuration."})
             return
         if parsed.path == "/api/auth/users":
             if self._require_auth(admin=True, touch=False) is None:
@@ -2088,6 +2242,20 @@ class InventoryRequestHandler(SimpleHTTPRequestHandler):
             except (OSError, sqlite3.Error) as error:
                 self.log_error("Field option save failed: %s", error)
                 self._send_json(500, {"error": "Could not save field option."})
+            return
+        if self.path == "/api/replacement-handoff-config":
+            if self._require_auth(admin=True, touch=False) is None:
+                return
+            try:
+                payload = self._read_json()
+                with _DB_LOCK, database_connection() as connection:
+                    config = _save_replacement_handoff_config(connection, payload)
+                self._send_json(200, {"saved": True, "config": config})
+            except ValueError as error:
+                self._send_json(400, {"error": str(error)})
+            except (OSError, sqlite3.Error) as error:
+                self.log_error("Replacement handoff config save failed: %s", error)
+                self._send_json(500, {"error": "Could not save replacement handoff configuration."})
             return
         if self.path == "/api/users/staff-type":
             try:
