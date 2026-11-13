@@ -1525,6 +1525,8 @@ App.registerModule('inventory', (() => {
     const deviceLabel = device['Device name'] || device['Serial number'] || device['Device ID'] || 'device';
     const staffOptions = App.modules.users?.checkoutOptions?.() || [];
     const eventTimeValue = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`;
+    const currentDeploymentStatus = getDeviceDeploymentStatusValue(device) || 'In Stock';
+    const currentCondition = getDeviceConditionValue(device) || 'Good';
     Modal.open({
       title: `Check in ${deviceLabel}`,
       confirmText: 'Check in',
@@ -1539,6 +1541,14 @@ App.registerModule('inventory', (() => {
           <input class="form-control" id="checkinStaffEmail" name="staffEmail" type="email" list="primaryCheckinStaffSuggestions" autocomplete="email" value="${escapeHtml(primaryUser?.email || '')}" />
         </div>
         <div class="form-group">
+          <label class="form-label" for="primaryCheckinDeploymentStatus">Deployment status</label>
+          <select class="form-control" id="primaryCheckinDeploymentStatus" name="deployment_status">${buildEnumOptionsHtml(window.DEPLOYMENT_STATUS, currentDeploymentStatus, ' (legacy)')}</select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="primaryCheckinCondition">Hardware health</label>
+          <select class="form-control" id="primaryCheckinCondition" name="condition">${buildEnumOptionsHtml(window.CONDITION, currentDeploymentStatus === 'Disposed' ? 'End of Life' : currentCondition, ' (legacy)', window.CONDITION_LABELS)}</select>
+        </div>
+        <div class="form-group">
           <label class="form-label" for="primaryCheckinEventDate">Check-in date <span class="required">*</span></label>
           <input class="form-control" id="primaryCheckinEventDate" name="eventDate" type="date" required value="${getTodayDate()}" />
         </div>
@@ -1548,16 +1558,39 @@ App.registerModule('inventory', (() => {
         </div>
         ${staffSuggestions(staffOptions, 'primaryCheckinStaffSuggestions')}
       </form>`,
-      onOpen: () => bindStaffAutocomplete(
-        document.getElementById('checkinStaffName'),
-        document.getElementById('checkinStaffEmail'),
-        staffOptions
-      ),
+      onOpen: () => {
+        bindStaffAutocomplete(
+          document.getElementById('checkinStaffName'),
+          document.getElementById('checkinStaffEmail'),
+          staffOptions
+        );
+        const deploymentInput = document.getElementById('primaryCheckinDeploymentStatus');
+        const conditionInput = document.getElementById('primaryCheckinCondition');
+        const syncCondition = () => {
+          const disposed = deploymentInput?.value === 'Disposed';
+          if (conditionInput) {
+            conditionInput.disabled = disposed;
+            if (disposed) conditionInput.value = 'End of Life';
+          }
+        };
+        deploymentInput?.addEventListener('change', syncCondition);
+        syncCondition();
+      },
       onConfirm: async () => {
         const form = document.getElementById('primaryUserCheckinForm');
         if (!form.reportValidity()) return;
         const values = new FormData(form);
-        const inventory = getInventory().map((row, rowIndex) => (rowIndex === index ? clearPrimaryUserAssignment(row) : row));
+        const deploymentStatus = String(values.get('deployment_status') || currentDeploymentStatus).trim();
+        const condition = deploymentStatus === 'Disposed' ? 'End of Life' : String(values.get('condition') || currentCondition).trim();
+        const inventory = getInventory().map((row, rowIndex) => {
+          if (rowIndex !== index) return row;
+          const updated = clearPrimaryUserAssignment(row);
+          updated['deployment_status'] = deploymentStatus;
+          updated.condition = condition;
+          if (deploymentStatus === 'Disposed') updated.disposition_method = updated.disposition_method || '';
+          updated['Status Label'] = deriveStatusLabel(updated);
+          return updated;
+        });
         const event = {
           'Event ID': globalThis.crypto?.randomUUID?.() || `evt-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           'Asset key': getAssetKey(device),
@@ -1578,7 +1611,7 @@ App.registerModule('inventory', (() => {
           await App.store.setPrimaryUserCheckin(inventory, [...getCheckoutHistory(), event]);
           Modal.close();
           render(container, country);
-          Toast.show('Asset checked in and Primary user assignment cleared.', 'success');
+          Toast.show('Asset checked in, status updated, and Primary user assignment cleared.', 'success');
         } catch (error) {
           Toast.show(`Could not check in asset: ${error.message || error}`, 'error', 6000);
         }
@@ -1664,6 +1697,14 @@ App.registerModule('inventory', (() => {
                <input class="form-control" id="staffEmail" name="staffEmail" type="email" list="checkoutStaffSuggestions" autocomplete="email" value="${escapeHtml(currentCheckout['Staff email'] || '')}" />
              </div>
              <div class="form-group">
+               <label class="form-label" for="checkinDeploymentStatus">Deployment status</label>
+               <select class="form-control" id="checkinDeploymentStatus" name="deployment_status">${buildEnumOptionsHtml(window.DEPLOYMENT_STATUS, getDeviceDeploymentStatusValue(device) || 'In Stock', ' (legacy)')}</select>
+             </div>
+             <div class="form-group">
+               <label class="form-label" for="checkinCondition">Hardware health</label>
+               <select class="form-control" id="checkinCondition" name="condition">${buildEnumOptionsHtml(window.CONDITION, (getDeviceDeploymentStatusValue(device) === 'Disposed' ? 'End of Life' : getDeviceConditionValue(device) || 'Good'), ' (legacy)', window.CONDITION_LABELS)}</select>
+             </div>
+             <div class="form-group">
                <label class="form-label" for="eventDate">Check-in date <span class="required">*</span></label>
                <input class="form-control" id="eventDate" name="eventDate" type="date" required value="${getTodayDate()}" />
              </div>
@@ -1677,11 +1718,26 @@ App.registerModule('inventory', (() => {
              </div>`}
         ${staffSuggestions(checkoutUsers, 'checkoutStaffSuggestions')}
       </form>`,
-      onOpen: () => bindStaffAutocomplete(
-        document.getElementById(isCheckout ? 'checkoutStaffName' : 'staffName'),
-        document.getElementById(isCheckout ? 'checkoutStaffEmail' : 'staffEmail'),
-        checkoutUsers
-      ),
+      onOpen: () => {
+        bindStaffAutocomplete(
+          document.getElementById(isCheckout ? 'checkoutStaffName' : 'staffName'),
+          document.getElementById(isCheckout ? 'checkoutStaffEmail' : 'staffEmail'),
+          checkoutUsers
+        );
+        if (!isCheckout) {
+          const deploymentInput = document.getElementById('checkinDeploymentStatus');
+          const conditionInput = document.getElementById('checkinCondition');
+          const syncCondition = () => {
+            const disposed = deploymentInput?.value === 'Disposed';
+            if (conditionInput) {
+              conditionInput.disabled = disposed;
+              if (disposed) conditionInput.value = 'End of Life';
+            }
+          };
+          deploymentInput?.addEventListener('change', syncCondition);
+          syncCondition();
+        }
+      },
       onConfirm: async () => {
         const form = document.getElementById('checkoutEventForm');
         if (!form.reportValidity()) return;
@@ -1720,12 +1776,25 @@ App.registerModule('inventory', (() => {
           Notes: String(values.get('notes') || '').trim()
         };
         try {
+          if (!isCheckout) {
+            const deploymentStatus = String(values.get('deployment_status') || getDeviceDeploymentStatusValue(device) || '').trim();
+            const condition = deploymentStatus === 'Disposed' ? 'End of Life' : String(values.get('condition') || getDeviceConditionValue(device) || '').trim();
+            const inventory = getInventory();
+            const target = inventory[index];
+            if (target) {
+              target['deployment_status'] = deploymentStatus;
+              target.condition = condition;
+              if (deploymentStatus === 'Disposed' && !target.disposition_method) target.disposition_method = '';
+              target['Status Label'] = deriveStatusLabel(target);
+              await App.store.set(STORAGE_KEY, inventory);
+            }
+          }
           await App.store.set(CHECKOUT_HISTORY_KEY, [...getCheckoutHistory(), event]);
           Modal.close();
           render(container, country);
-          Toast.show(isCheckout ? 'Asset checked out and history saved.' : 'Asset checked in and history saved.', 'success');
+          Toast.show(isCheckout ? 'Asset checked out and history saved.' : 'Asset checked in, status updated, and history saved.', 'success');
         } catch (error) {
-          Toast.show(`Could not save checkout history: ${error.message || error}`, 'error', 6000);
+          Toast.show(isCheckout ? `Could not save checkout history: ${error.message || error}` : `Could not save check-in: ${error.message || error}`, 'error', 6000);
         }
       }
     });
