@@ -1,0 +1,15 @@
+
+/* Inventory filter enhancements */
+.inventory-filter-control { margin: 6px 0; }
+.inventory-filter-select-wrap { display: flex; gap: 6px; align-items: center; }
+.inventory-filter-select-wrap .form-control { flex: 1; min-width: 0; }
+.inventory-filter-clear { flex: 0 0 auto; padding: 2px 8px; line-height: 1.2; }
+.inventory-active-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 10px; }
+.inventory-active-filter-chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; background: var(--bg-secondary, #eef2f7); font-size: 12px; }
+.inventory-chip-clear { border: none; background: transparent; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+#toggleMoreInventoryFilters { margin: 8px 0; width: 100%; }
+.column-drawer-footer { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .inventory-active-filters { gap: 4px; }
+  .inventory-filter-select-wrap { gap: 4px; }
+}

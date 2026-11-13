@@ -117,23 +117,78 @@ App.registerModule('inventory', (() => {
     }
   }
 
+  const BLANK_FILTER_VALUE = '__blank__';
+  const BLANK_FILTER_LABEL = '(blank)';
+  const INVENTORY_FILTER_URL_KEYS = {
+    deploymentStatus: 'deploymentStatus',
+    condition: 'condition',
+    model: 'model',
+    manufacturer: 'manufacturer',
+    location: 'location',
+    replacementStatus: 'replacementStatus',
+    replacementCount: 'replacementCount',
+    oldDeviceOutcome: 'oldDeviceOutcome',
+    duplicatesOnly: 'duplicatesOnly',
+    showArchived: 'showArchived',
+    warrantyStatus: 'warrantyStatus',
+    search: 'q',
+  };
   const DEFAULT_FILTER_STATE = {
     duplicatesOnly: false,
     showArchived: false,
     deploymentStatus: '',
-    condition: ''
+    condition: '',
+    model: '',
+    manufacturer: '',
+    location: '',
+    replacementStatus: '',
+    replacementCount: '',
+    oldDeviceOutcome: '',
   };
+
+  function readUrlInventoryFilters() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const readBool = (k) => params.get(k) === '1' || params.get(k) === 'true';
+      return {
+        duplicatesOnly: readBool(INVENTORY_FILTER_URL_KEYS.duplicatesOnly),
+        showArchived: readBool(INVENTORY_FILTER_URL_KEYS.showArchived),
+        deploymentStatus: params.get(INVENTORY_FILTER_URL_KEYS.deploymentStatus) || '',
+        condition: params.get(INVENTORY_FILTER_URL_KEYS.condition) || '',
+        model: params.get(INVENTORY_FILTER_URL_KEYS.model) || '',
+        manufacturer: params.get(INVENTORY_FILTER_URL_KEYS.manufacturer) || '',
+        location: params.get(INVENTORY_FILTER_URL_KEYS.location) || '',
+        replacementStatus: params.get(INVENTORY_FILTER_URL_KEYS.replacementStatus) || '',
+        replacementCount: params.get(INVENTORY_FILTER_URL_KEYS.replacementCount) || '',
+        oldDeviceOutcome: params.get(INVENTORY_FILTER_URL_KEYS.oldDeviceOutcome) || '',
+        warrantyStatus: params.get(INVENTORY_FILTER_URL_KEYS.warrantyStatus) || '',
+        search: params.get(INVENTORY_FILTER_URL_KEYS.search) || '',
+      };
+    } catch {
+      return { ...DEFAULT_FILTER_STATE, warrantyStatus: '', search: '' };
+    }
+  }
+
+  const _initialUrlFilters = readUrlInventoryFilters();
   let filterState = {
-    duplicatesOnly: readStoredInventoryFlag('nexit_inventory_duplicates_only'),
-    showArchived: readStoredInventoryFlag('nexit_inventory_show_archived'),
-    deploymentStatus: readStoredInventoryEnumFilter('nexit_inventory_deployment_status'),
-    condition: readStoredInventoryEnumFilter('nexit_inventory_condition')
+    ...DEFAULT_FILTER_STATE,
+    duplicatesOnly: _initialUrlFilters.duplicatesOnly || readStoredInventoryFlag('nexit_inventory_duplicates_only'),
+    showArchived: _initialUrlFilters.showArchived || readStoredInventoryFlag('nexit_inventory_show_archived'),
+    deploymentStatus: _initialUrlFilters.deploymentStatus || readStoredInventoryEnumFilter('nexit_inventory_deployment_status'),
+    condition: _initialUrlFilters.condition || readStoredInventoryEnumFilter('nexit_inventory_condition'),
+    model: _initialUrlFilters.model || '',
+    manufacturer: _initialUrlFilters.manufacturer || '',
+    location: _initialUrlFilters.location || '',
+    replacementStatus: _initialUrlFilters.replacementStatus || '',
+    replacementCount: _initialUrlFilters.replacementCount || '',
+    oldDeviceOutcome: _initialUrlFilters.oldDeviceOutcome || '',
   };
   let filterPanelOpen = readStoredInventoryPanelOpen();
+  let moreFiltersOpen = false;
   const MAX_HISTORY_STATES = 10;
   const MAX_HISTORY_BYTES = 20 * 1024 * 1024;
   let historyState = { undo: [], redo: [] };
-  let warrantyStatusFilter = '';
+  let warrantyStatusFilter = _initialUrlFilters.warrantyStatus || '';
   let dashboardRecordIndexes = null;
   let dashboardFilterLabel = '';
   let selectedDeviceIndexes = new Set();
@@ -143,6 +198,37 @@ App.registerModule('inventory', (() => {
   let checkoutIndexSource = null;
   let checkoutIndexes = { current: new Map(), assetKeys: new Set() };
   let searchDebounceTimer = null;
+  let initialSearchFromUrl = _initialUrlFilters.search || '';
+
+  function syncInventoryFiltersToUrl(searchValueOverride = null) {
+    try {
+      const url = new URL(window.location.href);
+      const params = url.searchParams;
+      Object.values(INVENTORY_FILTER_URL_KEYS).forEach((k) => params.delete(k));
+      const setIf = (key, val) => { if (val) params.set(key, val); };
+      setIf(INVENTORY_FILTER_URL_KEYS.deploymentStatus, filterState.deploymentStatus);
+      setIf(INVENTORY_FILTER_URL_KEYS.condition, filterState.condition);
+      setIf(INVENTORY_FILTER_URL_KEYS.model, filterState.model);
+      setIf(INVENTORY_FILTER_URL_KEYS.manufacturer, filterState.manufacturer);
+      setIf(INVENTORY_FILTER_URL_KEYS.location, filterState.location);
+      setIf(INVENTORY_FILTER_URL_KEYS.replacementStatus, filterState.replacementStatus);
+      setIf(INVENTORY_FILTER_URL_KEYS.replacementCount, filterState.replacementCount);
+      setIf(INVENTORY_FILTER_URL_KEYS.oldDeviceOutcome, filterState.oldDeviceOutcome);
+      if (filterState.duplicatesOnly) params.set(INVENTORY_FILTER_URL_KEYS.duplicatesOnly, '1');
+      if (filterState.showArchived) params.set(INVENTORY_FILTER_URL_KEYS.showArchived, '1');
+      setIf(INVENTORY_FILTER_URL_KEYS.warrantyStatus, warrantyStatusFilter);
+      const searchVal = searchValueOverride !== null ? searchValueOverride : (document.getElementById('inventorySearch')?.value || initialSearchFromUrl || '');
+      setIf(INVENTORY_FILTER_URL_KEYS.search, String(searchVal || '').trim());
+      history.replaceState(null, '', `${url.pathname}${params.toString() ? `?${params.toString()}` : ''}${url.hash || ''}`);
+    } catch {}
+  }
+
+  function persistCoreFilterState() {
+    localStorage.setItem('nexit_inventory_duplicates_only', JSON.stringify(!!filterState.duplicatesOnly));
+    localStorage.setItem('nexit_inventory_show_archived', JSON.stringify(!!filterState.showArchived));
+    localStorage.setItem('nexit_inventory_deployment_status', JSON.stringify(filterState.deploymentStatus || ''));
+    localStorage.setItem('nexit_inventory_condition', JSON.stringify(filterState.condition || ''));
+  }
 
   function normalizeDeviceType(value = '') {
     const normalized = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -1464,10 +1550,99 @@ App.registerModule('inventory', (() => {
     return result;
   }
 
+  function replacementSummaryForDevice(device) {
+    try {
+      const serial = device?.['Serial number'] || device?.['serial_number'] || '';
+      const mod = App.modules?.replacements;
+      if (mod && typeof mod.summaryForSerial === 'function') return mod.summaryForSerial(serial) || {};
+    } catch {}
+    return {};
+  }
+
+  function getInventoryFilterFieldValue(device, field) {
+    const rep = (field === 'replacementStatus' || field === 'replacementCount' || field === 'oldDeviceOutcome') ? replacementSummaryForDevice(device) : null;
+    switch (field) {
+      case 'deploymentStatus':
+        return String(device?.deployment_status ?? device?.['Deployment Status'] ?? '').trim();
+      case 'condition':
+        return String(device?.condition ?? device?.['Hardware Health'] ?? '').trim();
+      case 'model':
+        return String(device?.Model ?? device?.['Model'] ?? '').trim();
+      case 'manufacturer':
+        return String(device?.Manufacturer ?? device?.['Manufacturer'] ?? '').trim();
+      case 'location': {
+        const users = App.store.get('users') || [];
+        const primaryEmail = String(device?.['Primary user email address'] || device?.['Primary user UPN'] || '').trim().toLowerCase();
+        const user = primaryEmail ? users.find((u) => String(u?.Email || '').trim().toLowerCase() === primaryEmail) : null;
+        return String(user?.Location || device?.Location || device?.['Location'] || '').trim();
+      }
+      case 'replacementStatus':
+        return String(rep?.['Replacement Status'] ?? '').trim();
+      case 'replacementCount': {
+        const v = rep?.['Replacement Count'];
+        if (v === null || v === undefined || String(v).trim() === '') return '';
+        return String(v).trim();
+      }
+      case 'oldDeviceOutcome':
+        return String(rep?.['old_device_outcome'] ?? '').trim();
+      default:
+        return '';
+    }
+  }
+
+  function matchesInventoryFilterValue(value, selected) {
+    if (!selected) return true;
+    const normalized = String(value ?? '').trim();
+    if (selected === BLANK_FILTER_VALUE) return normalized === '';
+    return normalized === String(selected).trim();
+  }
+
+  function getDistinctInventoryFilterOptions(rows, field) {
+    const values = new Set();
+    (rows || []).forEach((device) => {
+      const v = getInventoryFilterFieldValue(device, field);
+      if (v !== '') values.add(v);
+    });
+    let list = Array.from(values);
+    if (field === 'replacementCount') {
+      list.sort((a, b) => {
+        const na = Number(a), nb = Number(b);
+        const aNum = Number.isFinite(na) && String(na) === String(a).trim();
+        const bNum = Number.isFinite(nb) && String(nb) === String(b).trim();
+        if (aNum && bNum) return na - nb;
+        if (aNum) return -1;
+        if (bNum) return 1;
+        return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+      });
+    } else {
+      list.sort((a, b) => String(a).localeCompare(String(b), undefined, { sensitivity: 'base' }));
+    }
+    return [{ value: BLANK_FILTER_VALUE, label: BLANK_FILTER_LABEL }, ...list.map((v) => ({ value: v, label: v }))];
+  }
+
+  const INVENTORY_FILTER_FIELDS = [
+    { key: 'deploymentStatus', label: 'Deployment Status', more: false },
+    { key: 'condition', label: 'Hardware Health', more: false },
+    { key: 'model', label: 'Model', more: true },
+    { key: 'manufacturer', label: 'Manufacturer', more: true },
+    { key: 'location', label: 'Location', more: true },
+    { key: 'replacementStatus', label: 'Replacement Status', more: true },
+    { key: 'replacementCount', label: 'Replacement Count', more: true },
+    { key: 'oldDeviceOutcome', label: 'Old Device Outcome', more: true },
+  ];
+
+  function hasActiveInventoryFilters() {
+    if (filterState.duplicatesOnly || filterState.showArchived) return true;
+    if (warrantyStatusFilter) return true;
+    return INVENTORY_FILTER_FIELDS.some(({ key }) => !!filterState[key]);
+  }
+
   function getFilteredRows(rows, countryFilter = App.countryFilter, searchValue = null) {
     if (searchValue === null) {
       const searchBox = document.getElementById('inventorySearch');
-      searchValue = (searchBox ? searchBox.value : '').trim().toLowerCase();
+      searchValue = (searchBox ? searchBox.value : (initialSearchFromUrl || '')).trim().toLowerCase();
+    } else {
+      searchValue = String(searchValue || '').trim().toLowerCase();
     }
     const warrantyValue = warrantyStatusFilter;
     const deviceIndexMap = new Map(rows.map((device, index) => [device, index]));
@@ -1479,14 +1654,16 @@ App.registerModule('inventory', (() => {
       const matchesDashboard = dashboardRecordIndexes === null || dashboardRecordIndexes.has(deviceIndexMap.get(device));
       const matchesDeviceType = !activeDeviceType || getAssetType(device) === activeDeviceType;
       const isArchived = device?.is_archived === true;
-      const selectedDeploymentStatus = String(filterState.deploymentStatus || '').trim();
-      const selectedCondition = String(filterState.condition || '').trim();
-      const conditionValue = String(device.condition || '').trim();
-      const matchesDeploymentStatus = !selectedDeploymentStatus || String(device['deployment_status'] || '').trim() === selectedDeploymentStatus;
-      const matchesCondition = !selectedCondition || conditionValue === selectedCondition;
       const matchesArchiveView = filterState.showArchived ? isArchived : !isArchived;
       const matchesDuplicates = !filterState.duplicatesOnly || device['Duplicate Serial'] === true;
-      return matchesSearch && matchesWarranty && matchesCountry && matchesDashboard && matchesDeviceType && matchesArchiveView && matchesDeploymentStatus && matchesCondition && matchesDuplicates;
+      if (!(matchesSearch && matchesWarranty && matchesCountry && matchesDashboard && matchesDeviceType && matchesArchiveView && matchesDuplicates)) return false;
+      for (const { key } of INVENTORY_FILTER_FIELDS) {
+        const selected = filterState[key];
+        if (!selected) continue;
+        const value = getInventoryFilterFieldValue(device, key);
+        if (!matchesInventoryFilterValue(value, selected)) return false;
+      }
+      return true;
     });
   }
 
@@ -1965,29 +2142,40 @@ App.registerModule('inventory', (() => {
       </div>`;
     };
 
+    const rowsForOptions = getInventory();
+    const renderFilterSelect = ({ key, label, more }) => {
+      const options = getDistinctInventoryFilterOptions(rowsForOptions, key);
+      const selected = String(filterState[key] || '');
+      const hasValue = selected !== '';
+      const optionsHtml = [`<option value="">All</option>`]
+        .concat(options.map((opt) => `<option value="${escapeHtml(opt.value)}" ${selected === opt.value ? 'selected' : ''}>${escapeHtml(opt.label)}</option>`)).join('');
+      const showMore = !more || moreFiltersOpen || !!filterState[key];
+      return `<div class="inventory-filter-control" data-filter-key="${escapeHtml(key)}" data-more-filter="${more ? '1' : '0'}" ${showMore ? '' : 'hidden'}>
+        <label class="duplicate-filter-option" for="inventoryFilter_${escapeHtml(key)}">${escapeHtml(label)}</label>
+        <div class="inventory-filter-select-wrap">
+          <select id="inventoryFilter_${escapeHtml(key)}" class="form-control" data-inventory-filter="${escapeHtml(key)}" aria-label="${escapeHtml(label)}">${optionsHtml}</select>
+          ${hasValue ? `<button type="button" class="btn btn-secondary btn-sm inventory-filter-clear" data-clear-filter="${escapeHtml(key)}" aria-label="Clear ${escapeHtml(label)} filter">×</button>` : ''}
+        </div>
+      </div>`;
+    };
+
+    const moreFilters = INVENTORY_FILTER_FIELDS.filter((f) => f.more);
+    const hasMoreActive = moreFilters.some((f) => !!filterState[f.key]);
+
     return `
       <div class="layout-controls">
-        <button class="btn btn-secondary btn-sm" id="inventoryFilterToggle" aria-expanded="${filterPanelOpen}">Filter</button>
+        <button class="btn btn-secondary btn-sm" id="inventoryFilterToggle" aria-expanded="${filterPanelOpen}">Filter${hasActiveInventoryFilters() ? ' •' : ''}</button>
         <div class="column-drawer-backdrop ${filterPanelOpen ? 'open' : ''}" id="inventoryFilterBackdrop"></div>
         <aside class="column-drawer inventory-filter-drawer ${filterPanelOpen ? 'open' : ''}" id="inventoryFilterPanel" aria-label="Inventory filters" aria-hidden="${!filterPanelOpen}">
-          <div class="column-drawer-header"><div><strong>Filters</strong><small>Status and condition filters.</small></div><button type="button" class="btn btn-secondary btn-sm" id="closeInventoryFilter" aria-label="Close filters">×</button></div>
+          <div class="column-drawer-header"><div><strong>Filters</strong><small>Refine inventory by status, device, and replacement.</small></div><button type="button" class="btn btn-secondary btn-sm" id="closeInventoryFilter" aria-label="Close filters">×</button></div>
           <label class="duplicate-filter-option"><input type="checkbox" id="inventoryFilterDuplicatesOnly" ${filterState.duplicatesOnly ? 'checked' : ''}> Duplicate Only</label>
           <label class="duplicate-filter-option"><input type="checkbox" id="inventoryFilterShowArchived" ${filterState.showArchived ? 'checked' : ''}> Show Archived</label>
-          <label class="duplicate-filter-option" for="inventoryFilterDeploymentStatus">Deployment Status</label>
-          <select id="inventoryFilterDeploymentStatus" class="form-control" aria-label="Deployment Status">
-            <option value="">All</option>
-            ${(window.DEPLOYMENT_STATUS || []).map((status) => `<option value="${escapeHtml(status)}" ${filterState.deploymentStatus === status ? 'selected' : ''}>${escapeHtml(status)}</option>`).join('')}
-          </select>
-          <label class="duplicate-filter-option" for="inventoryFilterCondition">Hardware Health</label>
-          <select id="inventoryFilterCondition" class="form-control" aria-label="Hardware Health">
-            <option value="">All</option>
-            ${(window.CONDITION || []).map((condition) => {
-              const label = window.CONDITION_LABELS?.[condition] || condition;
-              return `<option value="${escapeHtml(condition)}" ${filterState.condition === condition ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-            }).join('')}
-          </select>
-          <div class="column-drawer-footer"><button type="button" class="btn btn-secondary btn-sm" id="resetInventoryFiltersBtn">Reset</button></div>
+          ${INVENTORY_FILTER_FIELDS.filter((f) => !f.more).map(renderFilterSelect).join('')}
+          <button type="button" class="btn btn-secondary btn-sm" id="toggleMoreInventoryFilters" aria-expanded="${moreFiltersOpen || hasMoreActive}">${(moreFiltersOpen || hasMoreActive) ? 'Fewer filters' : 'More filters'}</button>
+          ${moreFilters.map(renderFilterSelect).join('')}
+          <div class="column-drawer-footer"><button type="button" class="btn btn-secondary btn-sm" id="clearAllInventoryFiltersBtn">Clear all</button><button type="button" class="btn btn-secondary btn-sm" id="resetInventoryFiltersBtn">Reset</button></div>
         </aside>
+
         <button class="btn btn-secondary btn-sm" id="columnLayoutToggle" aria-expanded="${columnDrawerOpen}">☷ Columns</button>
         <div class="column-drawer-backdrop ${columnDrawerOpen ? 'open' : ''}" id="columnDrawerBackdrop"></div>
         <aside class="column-drawer ${columnDrawerOpen ? 'open' : ''}" id="columnDrawer" aria-label="Column layout" aria-hidden="${!columnDrawerOpen}">
@@ -2088,32 +2276,44 @@ App.registerModule('inventory', (() => {
       saveVisibleColumns(DEFAULT_VISIBLE_COLUMNS);
       render(container, App.countryFilter);
     });
-    layoutControls.querySelector('#inventoryFilterDuplicatesOnly').addEventListener('change', (event) => {
-      filterState.duplicatesOnly = event.target.checked;
-      localStorage.setItem('nexit_inventory_duplicates_only', JSON.stringify(filterState.duplicatesOnly));
+    const applyFilterRender = () => {
+      persistCoreFilterState();
+      render(container, App.countryFilter);
+    };
+    layoutControls.querySelector('#inventoryFilterDuplicatesOnly')?.addEventListener('change', (e) => {
+      filterState.duplicatesOnly = e.target.checked;
+      applyFilterRender();
+    });
+    layoutControls.querySelector('#inventoryFilterShowArchived')?.addEventListener('change', (e) => {
+      filterState.showArchived = e.target.checked;
+      applyFilterRender();
+    });
+    layoutControls.querySelectorAll('[data-inventory-filter]').forEach((select) => {
+      select.addEventListener('change', () => {
+        const key = select.getAttribute('data-inventory-filter');
+        if (!key) return;
+        filterState[key] = select.value || '';
+        applyFilterRender();
+      });
+    });
+    layoutControls.querySelectorAll('[data-clear-filter]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-clear-filter');
+        if (!key) return;
+        filterState[key] = '';
+        applyFilterRender();
+      });
+    });
+    layoutControls.querySelector('#toggleMoreInventoryFilters')?.addEventListener('click', () => {
+      moreFiltersOpen = !moreFiltersOpen;
+      refreshLayoutControls(container);
+    });
+    layoutControls.querySelector('#clearAllInventoryFiltersBtn')?.addEventListener('click', () => {
+      clearAllInventoryFilters(container);
       render(container, App.countryFilter);
     });
-    layoutControls.querySelector('#inventoryFilterShowArchived').addEventListener('change', (event) => {
-      filterState.showArchived = event.target.checked;
-      localStorage.setItem('nexit_inventory_show_archived', JSON.stringify(filterState.showArchived));
-      render(container, App.countryFilter);
-    });
-    layoutControls.querySelector('#inventoryFilterDeploymentStatus').addEventListener('change', (event) => {
-      filterState.deploymentStatus = String(event.target.value || '');
-      localStorage.setItem('nexit_inventory_deployment_status', JSON.stringify(filterState.deploymentStatus));
-      render(container, App.countryFilter);
-    });
-    layoutControls.querySelector('#inventoryFilterCondition').addEventListener('change', (event) => {
-      filterState.condition = String(event.target.value || '');
-      localStorage.setItem('nexit_inventory_condition', JSON.stringify(filterState.condition));
-      render(container, App.countryFilter);
-    });
-    layoutControls.querySelector('#resetInventoryFiltersBtn').addEventListener('click', () => {
-      filterState = { ...DEFAULT_FILTER_STATE };
-      localStorage.removeItem('nexit_inventory_duplicates_only');
-      localStorage.removeItem('nexit_inventory_show_archived');
-      localStorage.removeItem('nexit_inventory_deployment_status');
-      localStorage.removeItem('nexit_inventory_condition');
+    layoutControls.querySelector('#resetInventoryFiltersBtn')?.addEventListener('click', () => {
+      clearAllInventoryFilters(container);
       render(container, App.countryFilter);
     });
     layoutControls.querySelectorAll('input[data-column]').forEach((checkbox) => {
@@ -2789,6 +2989,7 @@ App.registerModule('inventory', (() => {
       const caretEnd = searchInput.selectionEnd ?? searchValue.length;
       if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
       searchDebounceTimer = setTimeout(() => {
+        syncInventoryFiltersToUrl(searchValue);
         render(container, country);
         if (hadFocus) {
           const updatedSearchBox = container.querySelector('#inventorySearch');
@@ -2869,6 +3070,33 @@ App.registerModule('inventory', (() => {
     });
 
     bindLayoutControlEvents(container);
+
+    container.querySelectorAll('[data-clear-filter-chip]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-clear-filter-chip');
+        if (!key) return;
+        filterState[key] = '';
+        persistCoreFilterState();
+        render(container, country);
+      });
+    });
+    container.querySelector('[data-clear-warranty-chip]')?.addEventListener('click', () => {
+      warrantyStatusFilter = '';
+      render(container, country);
+    });
+    container.querySelectorAll('[data-clear-flag-chip]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-clear-flag-chip');
+        if (key === 'duplicatesOnly') filterState.duplicatesOnly = false;
+        if (key === 'showArchived') filterState.showArchived = false;
+        persistCoreFilterState();
+        render(container, country);
+      });
+    });
+    container.querySelector('#clearAllInventoryFiltersBtnInline')?.addEventListener('click', () => {
+      clearAllInventoryFilters(container);
+      render(container, country);
+    });
   }
 
   function clearInventoryFilters(container) {
@@ -2931,6 +3159,8 @@ App.registerModule('inventory', (() => {
     if (container && App.currentModule === 'inventory') {
       clearInventoryFilters(container);
       render(container, App.countryFilter);
+    } else {
+      syncInventoryFiltersToUrl('');
     }
   },
   showDashboardResults(indexes, label) {
@@ -2940,9 +3170,6 @@ App.registerModule('inventory', (() => {
       }
       dashboardRecordIndexes = new Set(indexes);
       dashboardFilterLabel = label;
-      filterState = { ...DEFAULT_FILTER_STATE };
-      warrantyStatusFilter = '';
-      activeDeviceType = '';
       selectedDeviceIndexes.clear();
       App.navigateTo('inventory');
     },
@@ -2958,6 +3185,8 @@ App.registerModule('inventory', (() => {
       if (container) {
         clearInventoryFilters(container);
         render(container, App.countryFilter);
+      } else {
+        syncInventoryFiltersToUrl('');
       }
     },
     showDuplicates() {
@@ -2966,10 +3195,11 @@ App.registerModule('inventory', (() => {
       activeDeviceType = '';
       warrantyStatusFilter = '';
       selectedDeviceIndexes.clear();
-      const container = document.getElementById('moduleContainer');
-      if (container) clearInventoryFilters(container);
       filterState = { ...DEFAULT_FILTER_STATE, duplicatesOnly: true };
-      render(container, App.countryFilter);
+      persistCoreFilterState();
+      const container = document.getElementById('moduleContainer');
+      if (container) render(container, App.countryFilter);
+      else syncInventoryFiltersToUrl(document.getElementById('inventorySearch')?.value || '');
     },
     showWarrantyMatched() {
       dashboardRecordIndexes = null;
@@ -2978,9 +3208,10 @@ App.registerModule('inventory', (() => {
       filterState = { ...DEFAULT_FILTER_STATE };
       warrantyStatusFilter = 'Matched';
       selectedDeviceIndexes.clear();
+      persistCoreFilterState();
       const container = document.getElementById('moduleContainer');
-      if (container) clearInventoryFilters(container);
-      render(container, App.countryFilter);
+      if (container) render(container, App.countryFilter);
+      else syncInventoryFiltersToUrl(document.getElementById('inventorySearch')?.value || '');
     },
     onCountryChange(country) {
       const element = document.getElementById('moduleContainer');
