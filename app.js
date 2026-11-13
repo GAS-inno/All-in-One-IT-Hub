@@ -823,6 +823,35 @@ App.registerModule('access', (() => {
     }).join('')}</tbody></table></div>`;
   }
 
+  let handoffConfigState = null;
+
+  function renderHandoffConfigCard(state) {
+    const config = state?.config || { deployment_statuses: [], conditions: [] };
+    const depOptions = state?.allowedDeploymentStatuses || [];
+    const condOptions = state?.allowedConditions || [];
+    if (!state) return '<p class="muted">Loading…</p>';
+    return `
+      <p class="muted">Controls which assets can be selected as the <strong>new device</strong> in replacement handoff. Assets must be unassigned, not checked out, and match an allowed Deployment Status + Condition.</p>
+      <form id="replacementHandoffConfigForm" class="access-form">
+        <fieldset>
+          <legend>Allowed Deployment Status</legend>
+          ${depOptions.map((v) => `<label class="duplicate-choice"><input type="checkbox" name="handoffDeploymentStatus" value="${escapeHtml(v)}" ${(config.deployment_statuses || []).includes(v) ? 'checked' : ''}> ${escapeHtml(v)}</label>`).join('') || '<p class="muted">No options available.</p>'}
+        </fieldset>
+        <fieldset>
+          <legend>Allowed Hardware Health (Condition)</legend>
+          ${condOptions.map((opt) => `<label class="duplicate-choice"><input type="checkbox" name="handoffCondition" value="${escapeHtml(opt.value)}" ${(config.conditions || []).includes(opt.value) ? 'checked' : ''}> ${escapeHtml(opt.label || opt.value)}</label>`).join('') || '<p class="muted">No options available.</p>'}
+        </fieldset>
+        <div class="form-help">Default: In Stock + Working (Good). Excluded states (e.g. Retired, blank, In Use) cannot be selected unless allowed here.</div>
+        <button type="submit" class="btn btn-primary">Save handoff settings</button>
+      </form>`;
+  }
+
+  async function loadHandoffConfig() {
+    const result = await api('/api/replacement-handoff-config');
+    handoffConfigState = result;
+    return result;
+  }
+
   async function render() {
     if (!App.auth.isAdmin()) {
       document.getElementById('moduleContainer').innerHTML = '<div class="card"><p>Administrator access required.</p></div>';
@@ -842,15 +871,19 @@ App.registerModule('access', (() => {
           </form>
         </section>
         <section class="card">
+          <div class="card-header"><span class="card-title">Replacement handoff settings</span></div>
+          <div id="replacementHandoffConfigCard"><p class="muted">Loading…</p></div>
+        </section>
+        <section class="card">
           <div class="card-header"><span class="card-title">Login accounts</span></div>
           <div id="authUsersTable"></div>
         </section>
       </div>`;
-    await refresh();
+    await Promise.all([refreshUsersTable(), refreshHandoffConfigCard()]);
     bind();
   }
 
-  async function refresh() {
+  async function refreshUsersTable() {
     const table = document.getElementById('authUsersTable');
     if (!table) return;
     table.innerHTML = '<p class="muted">Loading…</p>';
@@ -860,6 +893,22 @@ App.registerModule('access', (() => {
     } catch (error) {
       table.innerHTML = `<p class="auth-error">${escapeHtml(error.message || 'Could not load users.')}</p>`;
     }
+  }
+
+  async function refreshHandoffConfigCard() {
+    const card = document.getElementById('replacementHandoffConfigCard');
+    if (!card) return;
+    card.innerHTML = '<p class="muted">Loading…</p>';
+    try {
+      await loadHandoffConfig();
+      card.innerHTML = renderHandoffConfigCard(handoffConfigState);
+    } catch (error) {
+      card.innerHTML = `<p class="auth-error">${escapeHtml(error.message || 'Could not load replacement handoff settings.')}</p>`;
+    }
+  }
+
+  async function refresh() {
+    await Promise.all([refreshUsersTable(), refreshHandoffConfigCard()]);
   }
 
   function bind() {
@@ -875,9 +924,33 @@ App.registerModule('access', (() => {
         });
         form.reset();
         Toast.show('Login account created.', 'success');
-        await refresh();
+        await refreshUsersTable();
       } catch (error) {
         Toast.show(error.message || 'Could not create user.', 'error', 6000);
+      }
+    });
+
+    document.getElementById('replacementHandoffConfigCard')?.addEventListener('submit', async (event) => {
+      const form = event.target.closest('#replacementHandoffConfigForm');
+      if (!form) return;
+      event.preventDefault();
+      const deployment_statuses = Array.from(form.querySelectorAll('input[name="handoffDeploymentStatus"]:checked')).map((el) => el.value);
+      const conditions = Array.from(form.querySelectorAll('input[name="handoffCondition"]:checked')).map((el) => el.value);
+      if (!deployment_statuses.length || !conditions.length) {
+        Toast.show('Select at least one allowed Deployment Status and one allowed Condition.', 'error', 5000);
+        return;
+      }
+      try {
+        const result = await api('/api/replacement-handoff-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deployment_statuses, conditions })
+        });
+        handoffConfigState = { ...(handoffConfigState || {}), config: result.config || { deployment_statuses, conditions } };
+        Toast.show('Replacement handoff settings saved.', 'success');
+        await refreshHandoffConfigCard();
+      } catch (error) {
+        Toast.show(error.message || 'Could not save replacement handoff settings.', 'error', 6000);
       }
     });
 
