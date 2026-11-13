@@ -433,7 +433,7 @@ App.registerModule('replacements', (() => {
             <span class="replacement-field-message" id="oldDeviceMessage" aria-live="polite"></span>
             <div class="replacement-suggestions" id="oldDeviceSuggestions" role="listbox"></div>
           </label>
-          <label class="device-form-field replacement-autocomplete-field">Replacement Device (serial · model · country · fixed asset) *
+          <label class="device-form-field replacement-autocomplete-field">Replacement New Device (serial · model · country · fixed asset) *
             <input class="form-control" id="newSerialInput" name="New Device Serial Number" autocomplete="off" aria-autocomplete="list" aria-expanded="false" required value="${escapeHtml(record['New Device Serial Number'])}" placeholder="Search available inventory">
             <span class="replacement-field-message" id="replacementDeviceMessage" aria-live="polite"></span>
             <div class="replacement-suggestions" id="replacementDeviceSuggestions" role="listbox"></div>
@@ -660,7 +660,7 @@ App.registerModule('replacements', (() => {
               if (devices.length) {
                 deviceMessage.textContent = query ? 'Select a device from inventory.' : 'Available devices (select one). Type to filter.';
               } else {
-                deviceMessage.textContent = query ? 'No available replacement device matches this search.' : 'No available replacement devices found (check handoff eligibility/settings).';
+                deviceMessage.textContent = query ? 'No available replacement new device matches this search.' : 'No available replacement new devices found (check handoff eligibility/settings).';
               }
             } catch (error) {
               deviceMessage.dataset.loading = 'false';
@@ -705,7 +705,7 @@ App.registerModule('replacements', (() => {
         return;
       }
       if (!selectedNewSerial || serialKey(newSerial.value) !== serialKey(selectedNewSerial)) {
-        Toast.show('Select an available replacement device from inventory before saving.', 'error', 5000);
+        Toast.show('Select an available replacement new device from inventory before saving.', 'error', 5000);
         newSerial.focus();
         return;
       }

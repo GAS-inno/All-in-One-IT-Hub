@@ -2363,7 +2363,7 @@ App.registerModule('inventory', (() => {
                   suggestions.replaceChildren();
                   message.textContent = 'Available for handout.';
                 }));
-                message.textContent = matches.length ? 'Select a device from inventory.' : 'No available replacement device matches this search.';
+                message.textContent = matches.length ? 'Select a device from inventory.' : 'No available replacement new device matches this search.';
               } catch (error) {
                 message.textContent = error.message || 'Inventory search failed.';
               }
@@ -2395,7 +2395,7 @@ App.registerModule('inventory', (() => {
         }
         if (replacementPicker && replacementPicker.dataset.edited === 'true'
             && replacementPicker.value.trim() !== replacementPicker.dataset.selectedSerial) {
-          Toast.show('Choose an available replacement device from the inventory suggestions.', 'error');
+          Toast.show('Choose an available replacement new device from the inventory suggestions.', 'error');
           replacementPicker.focus();
           return;
         }
